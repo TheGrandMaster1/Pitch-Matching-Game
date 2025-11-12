@@ -21,7 +21,11 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#define ARM_MATH_CM4
+#include "arm_math.h"
+#include "stdbool.h"
+#include <stdlib.h>
+#include <time.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -43,14 +47,20 @@
 DAC_HandleTypeDef hdac1;
 DMA_HandleTypeDef hdma_dac1_ch1;
 
+TIM_HandleTypeDef htim2;
+
 /* USER CODE BEGIN PV */
 #define RECORD_LEN	65000	// samples for 65k/44.1khz = 1.47s
 float32_t sine_value;
-uint8_t dacBuffer[RECORD_LEN];  // DAC reads here (8-bit samples, since we read a byte from memory)
+float32_t angle;
+uint16_t dacBuffer[256];  // DAC reads here (8-bit samples, since we read a byte from memory)
 int32_t dfsdmBuffer[RECORD_LEN]; // DFSDM writes here (32-bit samples)
 
+
+volatile uint32_t target_freq; //random frequency for the played audio
+volatile float32_t real_freq;
 // Global array for DMA:
-volatile uint8_t sine_wave_array[DAC_MAX_BUFFER_SIZE];
+volatile uint16_t sine_wave_array[DAC_MAX_BUFFER_SIZE];
 
 
 
@@ -61,6 +71,7 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_DAC1_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -72,11 +83,34 @@ void play_sound(void){
 	for (int i = 0; i < DAC_MAX_BUFFER_SIZE; i++) {
 	  angle = 2.0f * 3.1415926535f * i / DAC_MAX_BUFFER_SIZE;
 	  sine_value = arm_sin_f32(angle);
-	  sine_wave_array[i] = (uint8_t)(42.5f * sine_value + 127.5f);
+	  sine_wave_array[i] = (uint16_t)(2047.5f * sine_value + 2047.5f);
 	}
 	// Start DAC in DMA mode for the sine wave:
-	HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1, (uint32_t*)sine_wave_array, 100, DAC_ALIGN_8B_R); //set DAC to read bytes from memory...
+	HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1, (uint32_t*)sine_wave_array,DAC_MAX_BUFFER_SIZE, DAC_ALIGN_12B_R); //set DAC to read bytes from memory...
 }
+void set_random_frequency(void)
+{
+    // Generate random number between 400 Hz and 2100 Hz (example range)
+	// rand() gives a random integer between 0 and RAND_MAX (usually 32767).
+    target_freq = 400 + (rand() % 1700);
+
+    // Assuming your timer clock = 80 MHz (adjust if different)
+    uint32_t timer_clock = 120000000;
+
+    // Compute new ARR value:
+    // DAC update rate = timer_clock / (Prescaler+1) / (Period+1)
+    // You need the update rate to be f_timer = N_samples * f_out
+    uint32_t f_timer = DAC_MAX_BUFFER_SIZE * target_freq;
+    uint32_t new_period = (timer_clock / f_timer) - 1;
+
+    __HAL_TIM_DISABLE(&htim2);
+    __HAL_TIM_SET_AUTORELOAD(&htim2, new_period);
+    __HAL_TIM_SET_COUNTER(&htim2, 0);
+    __HAL_TIM_ENABLE(&htim2);
+
+    real_freq = (float32_t)timer_clock / ((new_period + 1) * DAC_MAX_BUFFER_SIZE);
+}
+
 
 /* USER CODE END 0 */
 
@@ -110,9 +144,13 @@ int main(void)
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_DAC1_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
 
+  HAL_TIM_Base_Start(&htim2); //Don't forget to set DAC trigger tim2 for DMA
 
+  //for the random frequency:
+  srand(HAL_GetTick());
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -120,6 +158,7 @@ int main(void)
   while (1)
   {
 	play_sound();
+	set_random_frequency();
 	HAL_Delay(300);
 	HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_1);
     /* USER CODE END WHILE */
@@ -208,7 +247,7 @@ static void MX_DAC1_Init(void)
   /** DAC channel OUT1 config
   */
   sConfig.DAC_SampleAndHold = DAC_SAMPLEANDHOLD_DISABLE;
-  sConfig.DAC_Trigger = DAC_TRIGGER_NONE;
+  sConfig.DAC_Trigger = DAC_TRIGGER_T2_TRGO;
   sConfig.DAC_HighFrequency = DAC_HIGH_FREQUENCY_INTERFACE_MODE_ABOVE_80MHZ;
   sConfig.DAC_OutputBuffer = DAC_OUTPUTBUFFER_ENABLE;
   sConfig.DAC_ConnectOnChipPeripheral = DAC_CHIPCONNECT_DISABLE;
@@ -220,6 +259,51 @@ static void MX_DAC1_Init(void)
   /* USER CODE BEGIN DAC1_Init 2 */
 
   /* USER CODE END DAC1_Init 2 */
+
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 0;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 2750;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
 
 }
 
