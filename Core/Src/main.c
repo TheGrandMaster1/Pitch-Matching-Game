@@ -26,6 +26,7 @@
 #include "stdbool.h"
 #include <stdlib.h>
 #include <time.h>
+#include <math.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,7 +36,11 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define RECORD_LEN	65000	// samples for 65k/44.1khz = 1.47s
 #define DAC_MAX_BUFFER_SIZE 30
+#define FFT_LENGTH  1024    // Power of 2
+#define SAMPLE_RATE 44100   // Hz
+#define PI 3.14159265358979f
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -54,7 +59,6 @@ DMA_HandleTypeDef hdma_dfsdm1_flt0;
 TIM_HandleTypeDef htim2;
 
 /* USER CODE BEGIN PV */
-#define RECORD_LEN	65000	// samples for 65k/44.1khz = 1.47s
 float32_t sine_value;
 float32_t angle;
 uint16_t dacBuffer[RECORD_LEN];  // DAC reads here (8-bit samples, since we read a byte from memory)
@@ -70,6 +74,12 @@ volatile bool recording = false;
 // Global array for DMA:
 volatile uint16_t sine_wave_array[DAC_MAX_BUFFER_SIZE];
 
+// FFT Analysis Variables
+float32_t fftInput[FFT_LENGTH];
+float32_t fftOutput[FFT_LENGTH];
+float32_t fftMagnitude[FFT_LENGTH/2];
+arm_rfft_fast_instance_f32 fftInstance;
+volatile float32_t detected_freq = 0.0f;
 
 
 /* USER CODE END PV */
@@ -82,6 +92,7 @@ static void MX_DAC1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_DFSDM1_Init(void);
 /* USER CODE BEGIN PFP */
+float32_t analyze_frequency(int32_t* audio_data, uint32_t data_length);
 
 /* USER CODE END PFP */
 
@@ -161,6 +172,14 @@ int main(void)
 
   //for the random frequency:
   srand(HAL_GetTick());
+
+
+  // Initialize FFT
+  if (arm_rfft_fast_init_f32(&fftInstance, FFT_LENGTH) != ARM_MATH_SUCCESS) {
+      Error_Handler();
+  }
+
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -176,6 +195,17 @@ int main(void)
 	  }
 
 	if (playback){
+
+		// LED feedback before playback starts
+		// blinks if it received a frequency > 0
+		if (detected_freq > 0.0f) {
+			// Fast blink for detected frequency
+			for(int i = 0; i < 20; i++) {
+				HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+				HAL_Delay(100);
+			}
+		}
+
 		// --- Play recorded sample ---
 		__HAL_TIM_DISABLE(&htim2);
 		__HAL_TIM_SET_AUTORELOAD(&htim2, 2750); //set back tim2 to 2750
@@ -473,6 +503,9 @@ void HAL_DFSDM_FilterRegConvCpltCallback(DFSDM_Filter_HandleTypeDef *hdfsdm_filt
 	recording = false;                       // allow tones again
 	HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
 
+	// ANALYZE FREQUENCY USING FFT
+	detected_freq = analyze_frequency(dfsdmBuffer, RECORD_LEN);
+
 	for (int i = 0; i < RECORD_LEN; i++) {
 		raw = dfsdmBuffer[i] >> 8;  // 24-bit signed sample
 		int32_t rawclip = raw;
@@ -491,6 +524,88 @@ void HAL_DFSDM_FilterRegConvCpltCallback(DFSDM_Filter_HandleTypeDef *hdfsdm_filt
 	}
 	playback = true;
 
+}
+
+
+float32_t analyze_frequency(int32_t* audio_data, uint32_t data_length) {
+    // 1. Prepare data for FFT (use first FFT_LENGTH samples)
+    uint32_t samples_to_use = (data_length < FFT_LENGTH) ? data_length : FFT_LENGTH;
+
+    // Convert to float and apply windowing
+    for (int i = 0; i < samples_to_use; i++) {
+        // Apply Hamming window to reduce spectral leakage
+        float32_t window = 0.54f - 0.46f * arm_cos_f32(2.0f * PI * i / (FFT_LENGTH - 1));
+        fftInput[i] = ((float32_t)audio_data[i]) * window;
+    }
+
+    // Zero-pad if we don't have enough samples
+    for (int i = samples_to_use; i < FFT_LENGTH; i++) {
+        fftInput[i] = 0.0f;
+    }
+
+    // 2. Perform Real FFT
+    arm_rfft_fast_f32(&fftInstance, fftInput, fftOutput, 0);
+
+    // 3. Compute magnitude spectrum
+    // fftOutput contains: [real(0), real(1), imag(1), real(2), imag(2), ...]
+    for (int i = 0; i < FFT_LENGTH/2; i++) {
+        float32_t real, imag;
+
+        if (i == 0) {
+            // DC component
+            real = fftOutput[0];
+            imag = 0.0f;
+        } else if (i == FFT_LENGTH/2) {
+            // Nyquist frequency
+            real = fftOutput[1];
+            imag = 0.0f;
+        } else {
+            real = fftOutput[2*i];
+            imag = fftOutput[2*i + 1];
+        }
+
+        fftMagnitude[i] = sqrtf(real*real + imag*imag);
+    }
+
+    // 4. Find the peak frequency (ignore DC and very low frequencies)
+    uint32_t maxIndex = 0;
+    float32_t maxMagnitude = 0.0f;
+
+    // Search in human voice range (100Hz to 3000Hz)
+    uint32_t start_bin = (uint32_t)(100.0f * FFT_LENGTH / SAMPLE_RATE);  // ~2-3 bins
+    uint32_t end_bin = (uint32_t)(3000.0f * FFT_LENGTH / SAMPLE_RATE);   // ~69 bins
+
+    // Ensure we're within bounds
+    if (start_bin < 1) start_bin = 1;
+    if (end_bin >= FFT_LENGTH/2) end_bin = FFT_LENGTH/2 - 1;
+
+    for (uint32_t i = start_bin; i <= end_bin; i++) {
+        if (fftMagnitude[i] > maxMagnitude) {
+            maxMagnitude = fftMagnitude[i];
+            maxIndex = i;
+        }
+    }
+
+    // 5. Convert bin index to frequency
+    float32_t frequency = (float32_t)maxIndex * SAMPLE_RATE / FFT_LENGTH;
+
+    // 6. Optional: Apply quadratic interpolation for better accuracy
+    if (maxIndex > start_bin && maxIndex < end_bin) {
+        float32_t y0 = fftMagnitude[maxIndex - 1];
+        float32_t y1 = fftMagnitude[maxIndex];
+        float32_t y2 = fftMagnitude[maxIndex + 1];
+
+        // Quadratic interpolation formula
+        float32_t delta = (y2 - y0) / (2.0f * (2.0f * y1 - y2 - y0));
+        frequency = ((float32_t)maxIndex + delta) * SAMPLE_RATE / FFT_LENGTH;
+    }
+
+    // Only return frequency if we have a strong enough signal
+    if (maxMagnitude < 100.0f) {  // Adjust this threshold based on your signal levels
+        return 0.0f;  // No significant frequency detected
+    }
+
+    return frequency;
 }
 
 /* USER CODE END 4 */
