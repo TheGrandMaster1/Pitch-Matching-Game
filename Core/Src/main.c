@@ -70,7 +70,7 @@ enum GameState {
 	SHOW_RESULT
 };
 
-enum GameState gameState = IDLE;
+enum GameState gameState = PLAY_TONE;
 
 #define RECORD_LEN	65000	// samples for 65k/44.1khz = 1.47s
 float32_t sine_value;
@@ -89,7 +89,10 @@ volatile int32_t raw;
 // Global array for DMA:
 volatile uint16_t sine_wave_array[DAC_MAX_BUFFER_SIZE];
 
-
+uint8_t uart_rx_buffer[32];
+volatile bool uart_cmd_ready = false;
+char uart_line[32];
+uint8_t uart_pos = 0;
 
 /* USER CODE END PV */
 
@@ -147,13 +150,65 @@ void send_msg(char* msg){
 	HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 1000);
 }
 
-// Receiving messages via UART
-uint8_t* receive_msg(uint8_t* rx_buffer, uint16_t size){
-	HAL_UART_Receive(&huart1, rx_buffer, size, 1000);
-	return rx_buffer;
+// ADD UART RECEIVE CALLBACK:
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART1)
+    {
+        uint8_t c = uart_rx_buffer[0];
+
+        if (c == '\r' || c == '\n') {
+            uart_line[uart_pos] = '\0';    // terminate string
+            uart_cmd_ready = true;
+            uart_pos = 0;                  // reset for next command
+        }
+        else if (uart_pos < sizeof(uart_line) - 1) {
+            uart_line[uart_pos++] = c;     // store character
+        }
+
+        HAL_UART_Receive_IT(&huart1, uart_rx_buffer, 1);  // restart interrupt
+    }
 }
 
+// FUNCTION TO PROCESS UART COMMANDS:
+void process_uart_command(char* cmd) {
+    // Remove newline characters
+    int len = strlen(cmd);
+    while (len > 0 && (cmd[len-1] == '\r' || cmd[len-1] == '\n')) {
+        cmd[len-1] = '\0';
+        len--;
+    }
 
+    if (strcmp(cmd, "start") == 0 || strcmp(cmd, "s") == 0) {
+        if (gameState == IDLE) {
+            send_msg("Starting game...\r\n");
+            gameState = PLAY_TONE;
+        }
+    }
+    else if (strcmp(cmd, "record") == 0 || strcmp(cmd, "r") == 0) {
+        if (gameState == WAIT_FOR_RECORD) {
+            send_msg("Starting recording...\r\n");
+            HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
+            if (HAL_DFSDM_FilterRegularStart_DMA(&hdfsdm1_filter0, dfsdmBuffer, RECORD_LEN) != HAL_OK) {
+                send_msg("Error starting recording!\r\n");
+                gameState = IDLE;
+            } else {
+                gameState = RECORD_SOUND;
+            }
+        }
+    }
+    else if (strcmp(cmd, "help") == 0 || strcmp(cmd, "h") == 0) {
+        send_msg("Available commands:\r\n");
+        send_msg("start/s - Start the game\r\n");
+        send_msg("record/r - Start recording (when prompted)\r\n");
+        send_msg("help/h - Show this help\r\n");
+    }
+    else {
+        char msg[60];
+        sprintf(msg, "Unknown command: '%s'. Type 'help' for commands.\r\n", cmd);
+        send_msg(msg);
+    }
+}
 /* USER CODE END 0 */
 
 /**
@@ -195,6 +250,10 @@ int main(void)
 
   //for the random frequency:
   srand(HAL_GetTick());
+
+  // START UART RECEPTION - ADD THIS LINE:
+  HAL_UART_Receive_IT(&huart1, uart_rx_buffer, 1); //This tells the UART peripheral: "When you receive 1 byte, trigger an interrupt"
+
   send_msg("Pitch Matching Game Initialized!\r\n");
   /* USER CODE END 2 */
 
@@ -202,6 +261,10 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	if (uart_cmd_ready) {
+	  process_uart_command(uart_line);
+	  uart_cmd_ready = false;
+	}
 	switch(gameState) {
 		case IDLE: {
 			HAL_Delay(10);
@@ -225,11 +288,13 @@ int main(void)
 			
 		case WAIT_FOR_RECORD: {
 			// waiting for user input via UART
+			HAL_Delay(10);
 			break;
 		}
 			
 		case RECORD_SOUND:
 			// Recording is in progress (handled by interrupt)
+			HAL_Delay(10);
 			break;
 			
 		case ANALYZE_RECORDING:
