@@ -1,0 +1,12 @@
+# Pitch Maching Game
+
+---
+
+## Game states
+- IDLE
+- PLAY_TONE
+- WAIT_FOR_RECORD
+- RECORD_SOUND
+- ANALYZE_RECORDING
+- PLAYBACK_SOUND
+- SHOW_RESULT

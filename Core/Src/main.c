@@ -25,7 +25,10 @@
 #include "arm_math.h"
 #include "stdbool.h"
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
+#include <stdio.h>
+#include <math.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -53,7 +56,22 @@ DMA_HandleTypeDef hdma_dfsdm1_flt0;
 
 TIM_HandleTypeDef htim2;
 
+UART_HandleTypeDef huart1;
+
 /* USER CODE BEGIN PV */
+// State machine for the game
+enum GameState {
+	IDLE,
+	PLAY_TONE,
+	WAIT_FOR_RECORD,
+	RECORD_SOUND,
+	ANALYZE_RECORDING,
+	PLAYBACK_SOUND,
+	SHOW_RESULT
+};
+
+enum GameState gameState = IDLE;
+
 #define RECORD_LEN	65000	// samples for 65k/44.1khz = 1.47s
 float32_t sine_value;
 float32_t angle;
@@ -63,9 +81,10 @@ int32_t dfsdmBuffer[RECORD_LEN]; // DFSDM writes here (32-bit samples)
 
 volatile uint32_t target_freq; //random frequency for the played audio
 volatile float32_t real_freq;
+volatile float32_t recorded_freq = 0.0f; // frequency detected in recorded audio
 volatile int32_t raw;
-volatile bool playback = false;
-volatile bool recording = false;
+// volatile bool playback = false;
+// volatile bool recording = false;
 
 // Global array for DMA:
 volatile uint16_t sine_wave_array[DAC_MAX_BUFFER_SIZE];
@@ -81,13 +100,15 @@ static void MX_DMA_Init(void);
 static void MX_DAC1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_DFSDM1_Init(void);
+static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void play_sound(void){
+void play_sound(void)
+{
 	//generate sine wave:
 	for (int i = 0; i < DAC_MAX_BUFFER_SIZE; i++) {
 	  angle = 2.0f * 3.1415926535f * i / DAC_MAX_BUFFER_SIZE;
@@ -97,6 +118,7 @@ void play_sound(void){
 	// Start DAC in DMA mode for the sine wave:
 	HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1, (uint32_t*)sine_wave_array,DAC_MAX_BUFFER_SIZE, DAC_ALIGN_12B_R); //set DAC to read bytes from memory...
 }
+
 void set_random_frequency(void)
 {
     // Generate random number between 400 Hz and 2100 Hz (example range)
@@ -118,6 +140,17 @@ void set_random_frequency(void)
     __HAL_TIM_ENABLE(&htim2);
 
     real_freq = (float32_t)timer_clock / ((new_period + 1) * DAC_MAX_BUFFER_SIZE);
+}
+
+// Wrapper for UART send messages
+void send_msg(char* msg){
+	HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 1000);
+}
+
+// Receiving messages via UART
+uint8_t* receive_msg(uint8_t* rx_buffer, uint16_t size){
+	HAL_UART_Receive(&huart1, rx_buffer, size, 1000);
+	return rx_buffer;
 }
 
 
@@ -155,39 +188,80 @@ int main(void)
   MX_DAC1_Init();
   MX_TIM2_Init();
   MX_DFSDM1_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
 
   HAL_TIM_Base_Start(&htim2); //Don't forget to set DAC trigger tim2 for DMA
 
   //for the random frequency:
   srand(HAL_GetTick());
+  send_msg("Pitch Matching Game Initialized!\r\n");
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-
-	if (!recording && !playback) {
-		  play_sound();
-		  set_random_frequency();
-		  HAL_Delay(300);
-		  HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_1);
-	  }
-
-	if (playback){
-		// --- Play recorded sample ---
-		__HAL_TIM_DISABLE(&htim2);
-		__HAL_TIM_SET_AUTORELOAD(&htim2, 2750); //set back tim2 to 2750
-		__HAL_TIM_SET_COUNTER(&htim2, 0);
-		__HAL_TIM_ENABLE(&htim2);
-		HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1, (uint32_t *)dacBuffer, RECORD_LEN, DAC_ALIGN_12B_R);
-		HAL_Delay(5000);  // duration of recorded sound
-		HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_1);
-
-		playback = false;
+	switch(gameState) {
+		case IDLE: {
+			HAL_Delay(10);
+      // waiting for user input via UART
+			break;
+    }
+		case PLAY_TONE: {
+			// Play the target frequency tone
+			set_random_frequency();
+			play_sound();
+			send_msg("Listen to the target tone: ");
+			char freq_msg[50];
+			sprintf(freq_msg, "%.2f Hz\r\n", real_freq);
+			send_msg(freq_msg);
+			HAL_Delay(800);  // Play tone for 800ms
+			HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_1);
+			send_msg("Now try to match the pitch! Send 'record' or 'r' to start recording.\r\n");
+			gameState = WAIT_FOR_RECORD;
+			break;
+		}
+			
+		case WAIT_FOR_RECORD: {
+			// waiting for user input via UART
+			break;
+		}
+			
+		case RECORD_SOUND:
+			// Recording is in progress (handled by interrupt)
+			break;
+			
+		case ANALYZE_RECORDING:
+			// Analyze the recorded audio frequency
+      // TODO: Implement frequency analysis
+			break;
+			
+		case PLAYBACK_SOUND:
+			// Play back the recorded sound
+			__HAL_TIM_DISABLE(&htim2);
+			__HAL_TIM_SET_AUTORELOAD(&htim2, 2750); //set back tim2 to 2750
+			__HAL_TIM_SET_COUNTER(&htim2, 0);
+			__HAL_TIM_ENABLE(&htim2);
+			HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1, (uint32_t *)dacBuffer, RECORD_LEN, DAC_ALIGN_12B_R);
+			HAL_Delay(2000);  // Play for 2 seconds
+			HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_1);
+			gameState = SHOW_RESULT;
+			break;
+			
+		case SHOW_RESULT: {
+			// Compare frequencies and show result
+			// TODO: Implement frequency comparison
+      
+      // go back to IDLE state
+			gameState = IDLE;
+			break;
+		}
+			
+		default:
+			gameState = IDLE;
+			break;
 	}
-
 
     /* USER CODE END WHILE */
 
@@ -389,6 +463,54 @@ static void MX_TIM2_Init(void)
 }
 
 /**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART1_Init 0 */
+
+  /* USER CODE END USART1_Init 0 */
+
+  /* USER CODE BEGIN USART1_Init 1 */
+
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 115200;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart1.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetTxFifoThreshold(&huart1, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetRxFifoThreshold(&huart1, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_DisableFifoMode(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART1_Init 2 */
+
+  /* USER CODE END USART1_Init 2 */
+
+}
+
+/**
   * Enable DMA controller clock
   */
 static void MX_DMA_Init(void)
@@ -451,27 +573,16 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
-	if (GPIO_Pin == bluePB_Pin) {
-		recording = true;                    // stop tone generation
-		HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_1);
-		HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
-		// Clear buffers before recording
-		for (int i = 0; i < RECORD_LEN; i++) {
-			dfsdmBuffer[i] = 0;
-			dacBuffer[i] = 0;
-		}
-		// Start recording
-		HAL_DFSDM_FilterRegularStart_DMA(&hdfsdm1_filter0, dfsdmBuffer, RECORD_LEN);
-	}
-
+	// Button functionality removed - using UART commands instead
+	// This callback can be left empty or removed
 }
 
 void HAL_DFSDM_FilterRegConvCpltCallback(DFSDM_Filter_HandleTypeDef *hdfsdm_filter) {
 	// Stop DFSDM first!
 	HAL_DFSDM_FilterRegularStop_DMA(&hdfsdm1_filter0);
 
-	recording = false;                       // allow tones again
 	HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+	send_msg("Recording complete!\r\n");
 
 	for (int i = 0; i < RECORD_LEN; i++) {
 		raw = dfsdmBuffer[i] >> 8;  // 24-bit signed sample
@@ -489,7 +600,11 @@ void HAL_DFSDM_FilterRegConvCpltCallback(DFSDM_Filter_HandleTypeDef *hdfsdm_filt
 
 		dacBuffer[i] = (uint16_t)((rawclip * 4095) / diff); // scale to 12-bit DAC
 	}
-	playback = true;
+	
+	// Move to analyze state
+	if (gameState == RECORD_SOUND) {
+		gameState = ANALYZE_RECORDING;
+	}
 
 }
 

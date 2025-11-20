@@ -7,3 +7,5 @@
 ../Core/Src/stm32l4xx_hal_msp.c:331:6:HAL_DFSDM_ChannelMspDeInit	16	static
 ../Core/Src/stm32l4xx_hal_msp.c:361:6:HAL_TIM_Base_MspInit	24	static
 ../Core/Src/stm32l4xx_hal_msp.c:386:6:HAL_TIM_Base_MspDeInit	16	static
+../Core/Src/stm32l4xx_hal_msp.c:411:6:HAL_UART_MspInit	192	static
+../Core/Src/stm32l4xx_hal_msp.c:458:6:HAL_UART_MspDeInit	16	static
