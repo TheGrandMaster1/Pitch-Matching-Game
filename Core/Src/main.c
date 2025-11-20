@@ -528,8 +528,10 @@ void HAL_DFSDM_FilterRegConvCpltCallback(DFSDM_Filter_HandleTypeDef *hdfsdm_filt
 
 
 float32_t analyze_frequency(int32_t* audio_data, uint32_t data_length) {
+	// function: Takes raw audio samples (audio_data) and returns the dominant detected frequency (in Hz).
     // 1. Prepare data for FFT (use first FFT_LENGTH samples)
     uint32_t samples_to_use = (data_length < FFT_LENGTH) ? data_length : FFT_LENGTH;
+    // (condition) ? value_if_true : value_if_false
 
     // Convert to float and apply windowing
     for (int i = 0; i < samples_to_use; i++) {
@@ -601,7 +603,7 @@ float32_t analyze_frequency(int32_t* audio_data, uint32_t data_length) {
     }
 
     // Only return frequency if we have a strong enough signal
-    if (maxMagnitude < 100.0f) {  // Adjust this threshold based on your signal levels
+    if (maxMagnitude < 100.0f) {  // Adjust this threshold based on signal levels
         return 0.0f;  // No significant frequency detected
     }
 
