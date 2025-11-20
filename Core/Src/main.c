@@ -39,6 +39,10 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define DAC_MAX_BUFFER_SIZE 30
+#define FFT_LENGTH  1024    // Power of 2 for FFT
+#define SAMPLE_RATE 44100   // Hz
+#define PI 3.14159265358979f
+#define RECORD_LEN	65000	// samples for 65k/44.1khz = 1.47s
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -72,7 +76,6 @@ enum GameState {
 
 enum GameState gameState = PLAY_TONE;
 
-#define RECORD_LEN	65000	// samples for 65k/44.1khz = 1.47s
 float32_t sine_value;
 float32_t angle;
 uint16_t dacBuffer[RECORD_LEN];  // DAC reads here (8-bit samples, since we read a byte from memory)
@@ -94,6 +97,12 @@ volatile bool uart_cmd_ready = false;
 char uart_line[32];
 uint8_t uart_pos = 0;
 
+// FFT Analysis Variables
+float32_t fftInput[FFT_LENGTH];
+float32_t fftOutput[FFT_LENGTH];
+float32_t fftMagnitude[FFT_LENGTH/2];
+arm_rfft_fast_instance_f32 fftInstance;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -105,7 +114,8 @@ static void MX_TIM2_Init(void);
 static void MX_DFSDM1_Init(void);
 static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
-
+// ADD FFT FUNCTION PROTOTYPE
+float32_t analyze_frequency(int32_t* audio_data, uint32_t data_length);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -143,6 +153,86 @@ void set_random_frequency(void)
     __HAL_TIM_ENABLE(&htim2);
 
     real_freq = (float32_t)timer_clock / ((new_period + 1) * DAC_MAX_BUFFER_SIZE);
+}
+//FFT:
+float32_t analyze_frequency(int32_t* audio_data, uint32_t data_length) {
+    // 1. Prepare data for FFT (use first FFT_LENGTH samples)
+    uint32_t samples_to_use = (data_length < FFT_LENGTH) ? data_length : FFT_LENGTH;
+
+    // Convert to float and apply windowing
+    for (int i = 0; i < samples_to_use; i++) {
+        // Apply Hamming window to reduce spectral leakage
+        float32_t window = 0.54f - 0.46f * arm_cos_f32(2.0f * PI * i / (FFT_LENGTH - 1));
+        fftInput[i] = ((float32_t)audio_data[i]) * window;
+    }
+
+    // Zero-pad if we don't have enough samples
+    for (int i = samples_to_use; i < FFT_LENGTH; i++) {
+        fftInput[i] = 0.0f;
+    }
+
+    // 2. Perform Real FFT
+    arm_rfft_fast_f32(&fftInstance, fftInput, fftOutput, 0);
+
+    // 3. Compute magnitude spectrum
+    for (int i = 0; i < FFT_LENGTH/2; i++) {
+        float32_t real, imag;
+
+        if (i == 0) {
+            // DC component
+            real = fftOutput[0];
+            imag = 0.0f;
+        } else if (i == FFT_LENGTH/2) {
+            // Nyquist frequency
+            real = fftOutput[1];
+            imag = 0.0f;
+        } else {
+            real = fftOutput[2*i];
+            imag = fftOutput[2*i + 1];
+        }
+
+        fftMagnitude[i] = sqrtf(real*real + imag*imag);
+    }
+
+    // 4. Find the peak frequency (ignore DC and very low frequencies)
+    uint32_t maxIndex = 0;
+    float32_t maxMagnitude = 0.0f;
+
+    // Search in human voice range (100Hz to 3000Hz)
+    uint32_t start_bin = (uint32_t)(100.0f * FFT_LENGTH / SAMPLE_RATE);  // ~2-3 bins
+    uint32_t end_bin = (uint32_t)(3000.0f * FFT_LENGTH / SAMPLE_RATE);   // ~69 bins
+
+    // Ensure we're within bounds
+    if (start_bin < 1) start_bin = 1;
+    if (end_bin >= FFT_LENGTH/2) end_bin = FFT_LENGTH/2 - 1;
+
+    for (uint32_t i = start_bin; i <= end_bin; i++) {
+        if (fftMagnitude[i] > maxMagnitude) {
+            maxMagnitude = fftMagnitude[i];
+            maxIndex = i;
+        }
+    }
+
+    // 5. Convert bin index to frequency
+    float32_t frequency = (float32_t)maxIndex * SAMPLE_RATE / FFT_LENGTH;
+
+    // 6. Optional: Apply quadratic interpolation for better accuracy
+    if (maxIndex > start_bin && maxIndex < end_bin) {
+        float32_t y0 = fftMagnitude[maxIndex - 1];
+        float32_t y1 = fftMagnitude[maxIndex];
+        float32_t y2 = fftMagnitude[maxIndex + 1];
+
+        // Quadratic interpolation formula
+        float32_t delta = (y2 - y0) / (2.0f * (2.0f * y1 - y2 - y0));
+        frequency = ((float32_t)maxIndex + delta) * SAMPLE_RATE / FFT_LENGTH;
+    }
+
+    // Only return frequency if we have a strong enough signal
+    if (maxMagnitude < 100.0f) {  // Adjust this threshold based on signal levels
+        return 0.0f;  // No significant frequency detected
+    }
+
+    return frequency;
 }
 
 // Wrapper for UART send messages
@@ -248,6 +338,12 @@ int main(void)
 
   HAL_TIM_Base_Start(&htim2); //Don't forget to set DAC trigger tim2 for DMA
 
+  // Initialize FFT
+  if (arm_rfft_fast_init_f32(&fftInstance, FFT_LENGTH) != ARM_MATH_SUCCESS) {
+      Error_Handler();
+  }
+
+
   //for the random frequency:
   srand(HAL_GetTick());
 
@@ -299,7 +395,19 @@ int main(void)
 			
 		case ANALYZE_RECORDING:
 			// Analyze the recorded audio frequency
-      // TODO: Implement frequency analysis
+			send_msg("Analyzing recording with FFT...\r\n");
+			// Perform frequency analysis
+			recorded_freq = analyze_frequency(dfsdmBuffer, RECORD_LEN);
+
+			if (recorded_freq > 0.0f) {
+				char result_msg[100];
+				sprintf(result_msg, "Detected frequency: %.2f Hz\r\n", recorded_freq);
+				send_msg(result_msg);
+			} else {
+				send_msg("No clear frequency detected. Try singing louder!\r\n");
+			}
+			gameState = PLAYBACK_SOUND;
+
 			break;
 			
 		case PLAYBACK_SOUND:
@@ -316,9 +424,29 @@ int main(void)
 			
 		case SHOW_RESULT: {
 			// Compare frequencies and show result
-			// TODO: Implement frequency comparison
+			if (recorded_freq > 0.0f) {
+				float32_t diff = fabsf(recorded_freq - real_freq);
+				float32_t accuracy = 100.0f - (diff / real_freq * 100.0f);
+
+				char result_msg[150];
+				sprintf(result_msg, "Target: %.2f Hz | Your pitch: %.2f Hz | Difference: %.2f Hz\r\n",
+						real_freq, recorded_freq, diff);
+				send_msg(result_msg);
+
+				if (diff <= 10.0f) {  // 10Hz tolerance
+					send_msg("Excellent match! 🎵\r\n");
+				} else if (diff <= 50.0f) {
+					send_msg("Good effort! 👍\r\n");
+				} else {
+					send_msg("Keep practicing! 🎤\r\n");
+				}
+			} else {
+				send_msg("Could not detect your pitch. Try again!\r\n");
+			}
+
+			send_msg("Type 'start' to play again.\r\n");
       
-      // go back to IDLE state
+			// go back to IDLE state
 			gameState = IDLE;
 			break;
 		}
