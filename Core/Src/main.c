@@ -39,6 +39,10 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define DAC_MAX_BUFFER_SIZE 30
+#define FFT_LENGTH  1024    // Power of 2 for FFT
+#define SAMPLE_RATE 44100   // Hz
+#define PI 3.14159265358979f
+#define RECORD_LEN	65000	// samples for 65k/44.1khz = 1.47s
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -70,9 +74,8 @@ enum GameState {
 	SHOW_RESULT
 };
 
-enum GameState gameState = IDLE;
+enum GameState gameState = PLAY_TONE;
 
-#define RECORD_LEN	65000	// samples for 65k/44.1khz = 1.47s
 float32_t sine_value;
 float32_t angle;
 uint16_t dacBuffer[RECORD_LEN];  // DAC reads here (8-bit samples, since we read a byte from memory)
@@ -89,7 +92,16 @@ volatile int32_t raw;
 // Global array for DMA:
 volatile uint16_t sine_wave_array[DAC_MAX_BUFFER_SIZE];
 
+uint8_t uart_rx_buffer[32];
+volatile bool uart_cmd_ready = false;
+char uart_line[32];
+uint8_t uart_pos = 0;
 
+// FFT Analysis Variables
+float32_t fftInput[FFT_LENGTH];
+float32_t fftOutput[FFT_LENGTH];
+float32_t fftMagnitude[FFT_LENGTH/2];
+arm_rfft_fast_instance_f32 fftInstance;
 
 /* USER CODE END PV */
 
@@ -102,7 +114,8 @@ static void MX_TIM2_Init(void);
 static void MX_DFSDM1_Init(void);
 static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
-
+// ADD FFT FUNCTION PROTOTYPE
+float32_t analyze_frequency(int32_t* audio_data, uint32_t data_length);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -119,11 +132,15 @@ void play_sound(void)
 	HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1, (uint32_t*)sine_wave_array,DAC_MAX_BUFFER_SIZE, DAC_ALIGN_12B_R); //set DAC to read bytes from memory...
 }
 
+
 void set_random_frequency(void)
 {
     // Generate random number between 400 Hz and 2100 Hz (example range)
 	// rand() gives a random integer between 0 and RAND_MAX (usually 32767).
-    target_freq = 400 + (rand() % 1700);
+    //target_freq = 400 + (rand() % 1700);
+
+	// Get random frequency in lena's voice range; 200-1200 Hz:
+	target_freq = 200 + (rand() % 1000);
 
     // Assuming your timer clock = 80 MHz (adjust if different)
     uint32_t timer_clock = 120000000;
@@ -141,19 +158,357 @@ void set_random_frequency(void)
 
     real_freq = (float32_t)timer_clock / ((new_period + 1) * DAC_MAX_BUFFER_SIZE);
 }
+//FFT:
+float32_t analyze_frequency(int32_t* audio_data, uint32_t data_length) {
+    // 1. Prepare data for FFT
+    uint32_t samples_to_use = (data_length < FFT_LENGTH) ? data_length : FFT_LENGTH;
+
+    // Remove DC offset
+    int64_t dc_offset = 0;
+    for (int i = 0; i < samples_to_use; i++) {
+        dc_offset += audio_data[i];
+    }
+    dc_offset /= samples_to_use;
+
+    // 2. Apply AGGRESSIVE high-pass filter - remove everything below ~200Hz
+    static float32_t prev_input = 0.0f;
+    static float32_t prev_output = 0.0f;
+    static float32_t prev_input2 = 0.0f;
+    static float32_t prev_output2 = 0.0f;
+
+    // Two-stage high-pass filter for steeper cutoff
+    float32_t alpha = 0.97f;  // More aggressive cutoff
+
+    float32_t filtered[FFT_LENGTH];
+
+    // First stage
+    for (int i = 0; i < samples_to_use; i++) {
+        float32_t current_input = (float32_t)(audio_data[i] - dc_offset);
+        filtered[i] = alpha * (prev_output + current_input - prev_input);
+        prev_input = current_input;
+        prev_output = filtered[i];
+    }
+
+    // Second stage - filter again for steeper rolloff
+    for (int i = 0; i < samples_to_use; i++) {
+        float32_t current_input = filtered[i];
+        filtered[i] = alpha * (prev_output2 + current_input - prev_input2);
+        prev_input2 = current_input;
+        prev_output2 = filtered[i];
+    }
+
+    prev_input = 0.0f;
+    prev_output = 0.0f;
+    prev_input2 = 0.0f;
+    prev_output2 = 0.0f;
+
+    // 3. Apply Hamming window
+    for (int i = 0; i < samples_to_use; i++) {
+        float32_t window = 0.54f - 0.46f * arm_cos_f32(2.0f * PI * i / (FFT_LENGTH - 1));
+        fftInput[i] = filtered[i] * window;
+    }
+
+    for (int i = samples_to_use; i < FFT_LENGTH; i++) {
+        fftInput[i] = 0.0f;
+    }
+
+    // 4. Perform Real FFT
+    arm_rfft_fast_f32(&fftInstance, fftInput, fftOutput, 0);
+
+    // 5. Compute magnitude spectrum
+    fftMagnitude[0] = 0;
+    for (int i = 1; i < FFT_LENGTH/2; i++) {
+        float32_t real = fftOutput[2*i];
+        float32_t imag = fftOutput[2*i + 1];
+        fftMagnitude[i] = sqrtf(real*real + imag*imag);
+    }
+
+    // 6. Define search range - START AT 200Hz to avoid the 80-180Hz noise
+    uint32_t min_bin = (uint32_t)(200.0f * FFT_LENGTH / SAMPLE_RATE);
+    uint32_t max_bin = (uint32_t)(1500.0f * FFT_LENGTH / SAMPLE_RATE);
+
+    if (min_bin < 2) min_bin = 2;
+    if (max_bin >= FFT_LENGTH/2) max_bin = FFT_LENGTH/2 - 1;
+
+    // 7. Find overall maximum
+    float32_t max_magnitude = 0.0f;
+    for (uint32_t i = min_bin; i <= max_bin; i++) {
+        if (fftMagnitude[i] > max_magnitude) {
+            max_magnitude = fftMagnitude[i];
+        }
+    }
+
+    if (max_magnitude < 1000.0f) {
+        return 0.0f;
+    }
+
+    // 8. Find ALL significant peaks
+    typedef struct {
+        uint32_t bin;
+        float32_t magnitude;
+        float32_t frequency;
+    } Peak;
+
+    Peak peaks[30];
+    int peak_count = 0;
+    float32_t threshold = max_magnitude * 0.15f;
+
+    for (uint32_t i = min_bin + 1; i < max_bin - 1 && peak_count < 30; i++) {
+        if (fftMagnitude[i] > threshold &&
+            fftMagnitude[i] > fftMagnitude[i-1] &&
+            fftMagnitude[i] > fftMagnitude[i+1]) {
+
+            // Parabolic interpolation
+            float32_t y0 = fftMagnitude[i-1];
+            float32_t y1 = fftMagnitude[i];
+            float32_t y2 = fftMagnitude[i+1];
+
+            float32_t delta = 0.5f * (y2 - y0) / (2.0f * y1 - y2 - y0);
+            float32_t freq = ((float32_t)i + delta) * SAMPLE_RATE / FFT_LENGTH;
+
+            peaks[peak_count].bin = i;
+            peaks[peak_count].magnitude = fftMagnitude[i];
+            peaks[peak_count].frequency = freq;
+            peak_count++;
+        }
+    }
+
+    if (peak_count == 0) {
+        return 0.0f;
+    }
+
+    // 9. Score each peak - HEAVILY favor higher frequencies
+    float32_t best_fundamental = 0.0f;
+    float32_t best_score = 0.0f;
+
+    for (int i = 0; i < peak_count; i++) {
+        float32_t candidate = peaks[i].frequency;
+        float32_t score = 0.0f;
+
+        // STRONG frequency weighting - higher = much better
+        // 200Hz: weight = 0.4
+        // 500Hz: weight = 1.0
+        // 1000Hz: weight = 2.0
+        // 1500Hz: weight = 3.0
+        float32_t frequency_weight = candidate / 500.0f;
+        if (frequency_weight < 0.4f) frequency_weight = 0.4f;
+        if (frequency_weight > 3.0f) frequency_weight = 3.0f;
+
+        score = peaks[i].magnitude * frequency_weight;
+
+        // Check if other peaks are SUBHARMONICS of this candidate
+        int subharmonic_count = 0;
+        for (int div = 2; div <= 4; div++) {
+            float32_t subharmonic_freq = candidate / (float32_t)div;
+
+            if (subharmonic_freq < 200.0f) continue;
+
+            for (int j = 0; j < peak_count; j++) {
+                if (i == j) continue;
+
+                float32_t diff = fabsf(peaks[j].frequency - subharmonic_freq);
+                float32_t tolerance = subharmonic_freq * 0.15f;
+
+                if (diff < tolerance) {
+                    // Penalize heavily - this is probably not fundamental
+                    score *= 0.5f;
+                    subharmonic_count++;
+                    break;
+                }
+            }
+        }
+
+        // Check for HARMONICS above this candidate
+        int harmonic_count = 0;
+        for (int h = 2; h <= 5; h++) {
+            float32_t harmonic_freq = candidate * h;
+
+            if (harmonic_freq > (float32_t)max_bin * SAMPLE_RATE / FFT_LENGTH) {
+                continue;
+            }
+
+            for (int j = 0; j < peak_count; j++) {
+                float32_t diff = fabsf(peaks[j].frequency - harmonic_freq);
+                float32_t tolerance = candidate * 0.15f;
+
+                if (diff < tolerance) {
+                    score += peaks[j].magnitude * 0.3f;
+                    harmonic_count++;
+                    break;
+                }
+            }
+        }
+
+        // Huge boost if we found harmonics and no subharmonics
+        if (harmonic_count > 0 && subharmonic_count == 0) {
+            score *= 2.0f;
+        }
+
+        if (score > best_score) {
+            best_score = score;
+            best_fundamental = candidate;
+        }
+    }
+
+    return best_fundamental;
+}
+
+// Add this debug function to see what the algorithm is thinking:
+void debug_harmonic_analysis(void) {
+    char msg[150];
+    send_msg("\n=== Harmonic Analysis Debug ===\r\n");
+
+    // Recompute to show scoring
+    uint32_t min_bin = (uint32_t)(200.0f * FFT_LENGTH / SAMPLE_RATE);
+    uint32_t max_bin = (uint32_t)(1200.0f * FFT_LENGTH / SAMPLE_RATE);
+
+    float32_t max_magnitude = 0.0f;
+    for (uint32_t i = min_bin; i <= max_bin; i++) {
+        if (fftMagnitude[i] > max_magnitude) {
+            max_magnitude = fftMagnitude[i];
+        }
+    }
+
+    typedef struct {
+        uint32_t bin;
+        float32_t magnitude;
+        float32_t frequency;
+    } Peak;
+
+    Peak peaks[30];
+    int peak_count = 0;
+    float32_t threshold = max_magnitude * 0.15f;
+
+    for (uint32_t i = min_bin + 1; i < max_bin - 1 && peak_count < 30; i++) {
+        if (fftMagnitude[i] > threshold &&
+            fftMagnitude[i] > fftMagnitude[i-1] &&
+            fftMagnitude[i] > fftMagnitude[i+1]) {
+
+            float32_t y0 = fftMagnitude[i-1];
+            float32_t y1 = fftMagnitude[i];
+            float32_t y2 = fftMagnitude[i+1];
+
+            float32_t delta = 0.5f * (y2 - y0) / (2.0f * y1 - y2 - y0);
+            float32_t freq = ((float32_t)i + delta) * SAMPLE_RATE / FFT_LENGTH;
+
+            peaks[peak_count].bin = i;
+            peaks[peak_count].magnitude = fftMagnitude[i];
+            peaks[peak_count].frequency = freq;
+            peak_count++;
+        }
+    }
+
+    sprintf(msg, "Found %d peaks. Analyzing candidates:\r\n", peak_count);
+    send_msg(msg);
+
+    // Show ALL candidates with detailed scoring
+    for (int i = 0; i < peak_count; i++) {
+        float32_t candidate = peaks[i].frequency;
+        int harmonic_count = 0;
+        int subharmonic_count = 0;
+
+        // Check for subharmonics
+        for (int div = 2; div <= 4; div++) {
+            float32_t subharmonic_freq = candidate / (float32_t)div;
+            if (subharmonic_freq < 100.0f) continue;
+
+            for (int j = 0; j < peak_count; j++) {
+                if (i == j) continue;
+                float32_t diff = fabsf(peaks[j].frequency - subharmonic_freq);
+                if (diff < subharmonic_freq * 0.15f) {
+                    subharmonic_count++;
+                    break;
+                }
+            }
+        }
+
+        // Check for harmonics
+        for (int h = 2; h <= 5; h++) {
+            float32_t harmonic_freq = candidate * h;
+            if (harmonic_freq > 1200.0f) continue;
+
+            for (int j = 0; j < peak_count; j++) {
+                float32_t diff = fabsf(peaks[j].frequency - harmonic_freq);
+                if (diff < candidate * 0.15f) {
+                    harmonic_count++;
+                    break;
+                }
+            }
+        }
+
+        sprintf(msg, "  %.1f Hz: mag %.0f, %dH/%dS\r\n",
+                candidate, peaks[i].magnitude, harmonic_count, subharmonic_count);
+        send_msg(msg);
+    }
+    send_msg("==============================\r\n\n");
+}
+
+
 
 // Wrapper for UART send messages
 void send_msg(char* msg){
 	HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 1000);
 }
 
-// Receiving messages via UART
-uint8_t* receive_msg(uint8_t* rx_buffer, uint16_t size){
-	HAL_UART_Receive(&huart1, rx_buffer, size, 1000);
-	return rx_buffer;
+// ADD UART RECEIVE CALLBACK:
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART1)
+    {
+        uint8_t c = uart_rx_buffer[0];
+
+        if (c == '\r' || c == '\n') {
+            uart_line[uart_pos] = '\0';    // terminate string
+            uart_cmd_ready = true;
+            uart_pos = 0;                  // reset for next command
+        }
+        else if (uart_pos < sizeof(uart_line) - 1) {
+            uart_line[uart_pos++] = c;     // store character
+        }
+
+        HAL_UART_Receive_IT(&huart1, uart_rx_buffer, 1);  // restart interrupt
+    }
 }
 
+// FUNCTION TO PROCESS UART COMMANDS:
+void process_uart_command(char* cmd) {
+    // Remove newline characters
+    int len = strlen(cmd);
+    while (len > 0 && (cmd[len-1] == '\r' || cmd[len-1] == '\n')) {
+        cmd[len-1] = '\0';
+        len--;
+    }
 
+    if (strcmp(cmd, "start") == 0 || strcmp(cmd, "s") == 0) {
+        if (gameState == IDLE) {
+            send_msg("\nStarting game...\r\n");
+            gameState = PLAY_TONE;
+        }
+    }
+    else if (strcmp(cmd, "record") == 0 || strcmp(cmd, "r") == 0) {
+        if (gameState == WAIT_FOR_RECORD) {
+            send_msg("Starting recording...\r\n");
+            HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
+            if (HAL_DFSDM_FilterRegularStart_DMA(&hdfsdm1_filter0, dfsdmBuffer, RECORD_LEN) != HAL_OK) {
+                send_msg("Error starting recording!\r\n");
+                gameState = IDLE;
+            } else {
+                gameState = RECORD_SOUND;
+            }
+        }
+    }
+    else if (strcmp(cmd, "help") == 0 || strcmp(cmd, "h") == 0) {
+        send_msg("Available commands:\r\n");
+        send_msg("start/s - Start the game\r\n");
+        send_msg("record/r - Start recording (when prompted)\r\n");
+        send_msg("help/h - Show this help\r\n");
+    }
+    else {
+        char msg[60];
+        sprintf(msg, "Unknown command: '%s'. Type 'help' for commands.\r\n", cmd);
+        send_msg(msg);
+    }
+}
 /* USER CODE END 0 */
 
 /**
@@ -193,8 +548,18 @@ int main(void)
 
   HAL_TIM_Base_Start(&htim2); //Don't forget to set DAC trigger tim2 for DMA
 
+  // Initialize FFT
+  if (arm_rfft_fast_init_f32(&fftInstance, FFT_LENGTH) != ARM_MATH_SUCCESS) {
+      Error_Handler();
+  }
+
+
   //for the random frequency:
   srand(HAL_GetTick());
+
+  // START UART RECEPTION - ADD THIS LINE:
+  HAL_UART_Receive_IT(&huart1, uart_rx_buffer, 1); //This tells the UART peripheral: "When you receive 1 byte, trigger an interrupt"
+
   send_msg("Pitch Matching Game Initialized!\r\n");
   /* USER CODE END 2 */
 
@@ -202,6 +567,10 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	if (uart_cmd_ready) {
+	  process_uart_command(uart_line);
+	  uart_cmd_ready = false;
+	}
 	switch(gameState) {
 		case IDLE: {
 			HAL_Delay(10);
@@ -225,16 +594,31 @@ int main(void)
 			
 		case WAIT_FOR_RECORD: {
 			// waiting for user input via UART
+			HAL_Delay(10);
 			break;
 		}
 			
 		case RECORD_SOUND:
 			// Recording is in progress (handled by interrupt)
+			HAL_Delay(10);
 			break;
 			
 		case ANALYZE_RECORDING:
 			// Analyze the recorded audio frequency
-      // TODO: Implement frequency analysis
+			send_msg("Analyzing recording with FFT...\r\n");
+			// Perform frequency analysis
+			recorded_freq = analyze_frequency(dfsdmBuffer, RECORD_LEN);
+			debug_harmonic_analysis();
+
+			if (recorded_freq > 0.0f) {
+				char result_msg[100];
+				sprintf(result_msg, "Detected frequency: %.2f Hz\r\n", recorded_freq);
+				send_msg(result_msg);
+			} else {
+				send_msg("No clear frequency detected. Try singing louder!\r\n");
+			}
+			gameState = PLAYBACK_SOUND;
+
 			break;
 			
 		case PLAYBACK_SOUND:
@@ -251,9 +635,30 @@ int main(void)
 			
 		case SHOW_RESULT: {
 			// Compare frequencies and show result
-			// TODO: Implement frequency comparison
+			if (recorded_freq > 0.0f) {
+				float32_t diff = fabsf(recorded_freq - real_freq);
+				float32_t ratio = (recorded_freq < real_freq) ? recorded_freq/real_freq : real_freq/recorded_freq;
+				float32_t accuracy = ratio * 100.0f;
+
+				char result_msg[150];
+				sprintf(result_msg, "Target: %.2f Hz | Your pitch: %.2f Hz | Difference: %.2f Hz | Accuracy: %.2f%% \r\n",
+						real_freq, recorded_freq, diff, accuracy);
+				send_msg(result_msg);
+
+				if (diff <= 10.0f) {  // 10Hz tolerance
+					send_msg("Excellent match! 🎵\r\n");
+				} else if (diff <= 50.0f) {
+					send_msg("Good effort! 👍\r\n");
+				} else {
+					send_msg("Keep practicing! 🎤\r\n");
+				}
+			} else {
+				send_msg("Could not detect your pitch. Try again!\r\n");
+			}
+
+			send_msg("Type 'start' or 's' to play again.\r\n");
       
-      // go back to IDLE state
+			// go back to IDLE state
 			gameState = IDLE;
 			break;
 		}
