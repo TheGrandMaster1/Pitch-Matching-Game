@@ -40,9 +40,9 @@
 /* USER CODE BEGIN PD */
 #define DAC_MAX_BUFFER_SIZE 30
 #define FFT_LENGTH  1024    // Power of 2 for FFT
-#define SAMPLE_RATE 44100   // Hz
+#define SAMPLE_RATE 16000   // Hz (reduced from 44100 to save RAM)
 #define PI 3.14159265358979f
-#define RECORD_LEN	65000	// samples for 65k/44.1khz = 1.47s
+#define RECORD_LEN	48000	// samples for 3 seconds at 16kHz (3 * 16000 = 48000)
 #define SCREEN_WIDTH 90
 #define SCREEN_HEIGHT 24
 /* USER CODE END PD */
@@ -78,6 +78,8 @@ enum GameState {
 
 enum GameState gameState = MENU;
 bool screen_drawn[7] = {false, false, false, false, false, false, false}; // Track if screen was drawn for each state
+// Screen buffer: [row][column] = [height][width]
+char screen_buffer[SCREEN_HEIGHT][SCREEN_WIDTH + 1]; // +1 for null terminator
 
 float32_t sine_value;
 float32_t angle;
@@ -99,6 +101,10 @@ uint8_t uart_rx_buffer[32];
 volatile bool uart_cmd_ready = false;
 char uart_line[32];
 uint8_t uart_pos = 0;
+
+// Cool spinner animation frames
+const char* spinner[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
+#define SPINNER_FRAMES 10
 
 // FFT Analysis Variables
 float32_t fftInput[FFT_LENGTH];
@@ -125,15 +131,16 @@ void clear_screen(void);
 void print_to_line(uint8_t row, uint8_t col, const char* text);
 void print_screen(void);
 void center_text(uint8_t row, const char* text);
-void print_horizontal_line(uint8_t row, char fill);
 void init_console(void);
+void print_game_title(void);
+
 void test_screen(void);
 void menu_screen(void);
 void play_tone_screen(void);
 void wait_for_record_screen(void);
-void record_sound_screen(void);
+void record_sound_screen(bool first_draw);
 void analyze_recording_screen(void);
-void playback_sound_screen(void);
+void playback_sound_screen(bool first_draw, uint32_t elapsed_ms, uint32_t duration_ms);
 void show_result_screen(void);
 /* USER CODE END PFP */
 
@@ -480,56 +487,82 @@ void init_console(void) {
   
   // Show initialization screen with loading animation
   clear_screen();
+  print_game_title();
+
+  center_text(14, "Initializing System...");
+  center_text(15, "Console Resolution: 90x24");
   
-  print_horizontal_line(0, '=');
-  center_text(2, "PITCH MATCHING GAME");
-  center_text(3, "Initializing System...");
-  print_horizontal_line(4, '-');
+  center_text(16, "System Ready");
   
-  center_text(6, "Console Resolution: 90x24");
-  center_text(8, "System Ready");
+  // Print the screen once
+  print_screen();
   
-  // Show loading animation on line 23 for 5 seconds
-  const char* spinner[] = {"|", "/", "-", "\\"};
+  // Show loading progress bar only on line 23 (last line) for 5 seconds
   uint32_t start_time = HAL_GetTick();
   uint32_t elapsed = 0;
-  int frame = 0;
+  uint32_t duration = 2000;
   
-  while (elapsed < 5000) {
-    clear_screen();
-    print_horizontal_line(0, '=');
-    center_text(2, "PITCH MATCHING GAME");
-    center_text(3, "Initializing System...");
-    print_horizontal_line(4, '-');
+  while (elapsed < duration) {
+    // Calculate progress percentage
+    uint32_t progress = (elapsed * 100) / duration;
+    if (progress > 100) progress = 100;
     
-    center_text(6, "Console Resolution: 90x24");
+    // Create progress bar: [====>    ] 50%
+    int bar_width = 60; // Fixed bar width
+    int filled = (progress * bar_width) / 100;
     
-    char loading[30];
-    sprintf(loading, "Loading %s", spinner[frame % 4]);
-    center_text(10, loading);
+    char loading[SCREEN_WIDTH + 1];
+    // Center the progress bar
+    int start_pos = (SCREEN_WIDTH - bar_width - 8) / 2; // 8 for "[", "]", " ", "100%"
+    int pos = 0;
     
-    print_horizontal_line(23, '=');
-    print_screen();
+    // Fill with spaces to center
+    for(int i = 0; i < start_pos; i++) {
+      loading[pos++] = ' ';
+    }
     
-    frame++;
-    HAL_Delay(200); // Update every 200ms
+    loading[pos++] = '[';
+    for(int i = 0; i < bar_width; i++) {
+      if (i < filled) {
+        loading[pos++] = '=';
+      } else if (i == filled && filled < bar_width) {
+        loading[pos++] = '>';
+      } else {
+        loading[pos++] = ' ';
+      }
+    }
+    loading[pos++] = ']';
+    loading[pos++] = ' ';
+    sprintf(loading + pos, "%3d%%", (int) progress);
+    
+    // Fill rest with spaces
+    while (pos < SCREEN_WIDTH) {
+      loading[pos++] = ' ';
+    }
+    loading[SCREEN_WIDTH] = '\0';
+    
+    // Update screen buffer line 23
+    memcpy(screen_buffer[23], loading, SCREEN_WIDTH);
+    
+    // Print only line 23 with carriage return (no newline)
+    char line[SCREEN_WIDTH + 1];
+    memcpy(line, screen_buffer[23], SCREEN_WIDTH);
+    line[SCREEN_WIDTH] = '\r';
+    HAL_UART_Transmit(&huart1, (uint8_t*)line, SCREEN_WIDTH + 1, 1000);
+    
+    HAL_Delay(50); // Update every 50ms for smooth progress
     elapsed = HAL_GetTick() - start_time;
   }
   
   // Final ready message
   clear_screen();
-  print_horizontal_line(0, '=');
   center_text(2, "PITCH MATCHING GAME");
   center_text(3, "System Ready!");
-  print_horizontal_line(4, '-');
   center_text(8, "Initialization Complete");
-  print_horizontal_line(23, '=');
   print_screen();
   
   HAL_Delay(1000);
 }
-
-
 
 // Test screen
 void test_screen(void) {
@@ -556,9 +589,39 @@ void test_screen(void) {
   print_screen();
 }
 
+/**
+ * Print the game title to the screen
+ * From line 2 to line 12
+ * From column 4 to column 40
+    ____  _ __       __       __  ___      __       __    _
+   / __ \(_) /______/ /_     /  |/  /___ _/ /______/ /_  (_)___  ____ _
+  / /_/ / / __/ ___/ __ \   / /|_/ / __ `/ __/ ___/ __ \/ / __ \/ __ `/
+ / ____/ / /_/ /__/ / / /  / /  / / /_/ / /_/ /__/ / / / / / / / /_/ /
+/_/   /_/\__/\___/_/ /_/  /_/  /_/\__,_/\__/\___/_/ /_/_/_/ /_/\__, /
+                                                              /____/
+   _________    __  _________
+  / ____/   |  /  |/  / ____/
+ / / __/ /| | / /|_/ / __/
+/ /_/ / ___ |/ /  / / /___
+\____/_/  |_/_/  /_/_____/
 
-// Screen buffer: [row][column] = [height][width]
-char screen_buffer[SCREEN_HEIGHT][SCREEN_WIDTH + 1]; // +1 for null terminator
+ */
+void print_game_title(void) {
+
+   print_to_line(2, 4, "    ____  _ __       __       __  ___      __       __    _");
+   print_to_line(3, 4, "   / __ \\(_) /______/ /_     /  |/  /___ _/ /______/ /_  (_)___  ____ _");
+   print_to_line(4, 4, "  / /_/ / / __/ ___/ __ \\   / /|_/ / __ `/ __/ ___/ __ \\/ / __ \\/ __ `/");
+   print_to_line(5, 4, " / ____/ / /_/ /__/ / / /  / /  / / /_/ / /_/ /__/ / / / / / / / /_/ /");
+   print_to_line(6, 4, "/_/   /_/\\__/\\___/_/ /_/  /_/  /_/\\__,_/\\__/\\___/_/ /_/_/_/ /_/\\__, /");
+   print_to_line(7, 4, "                                                              /____/");
+   
+   print_to_line(8 , 54, "   _________    __  _________");
+   print_to_line(9 , 54, "  / ____/   |  /  |/  / ____/");
+   print_to_line(10, 54, " / / __/ /| | / /|_/ / __/");
+   print_to_line(11, 54, "/ /_/ / ___ |/ /  / / /___");
+   print_to_line(12, 54, "\\____/_/  |_/_/  /_/_____/");
+}
+
 
 // Clear screen buffer with spaces
 void clear_screen(void) {
@@ -620,35 +683,20 @@ void center_text(uint8_t row, const char* text) {
   print_to_line(row, start_col, text);
 }
 
-// Helper function to create horizontal line
-void print_horizontal_line(uint8_t row, char fill) {
-  for(int col = 0; col < SCREEN_WIDTH; col++) {
-    screen_buffer[row][col] = fill;
-  }
-}
 
 // MENU state screen
 void menu_screen(void) {
   clear_screen();
   
-  // Top border
-  print_horizontal_line(0, '=');
+  print_game_title();
+
   
-  // Title
-  center_text(2, "PITCH MATCHING GAME");
-  center_text(3, "========== MENU ==========");
-  
-  // Menu options
-  print_to_line(6, 35, "1 - Start game");
-  print_to_line(8, 35, "2 - Help");
-  print_to_line(10, 35, "3 - Exit");
-  
-  // Bottom border
-  print_horizontal_line(23, '=');
+  // Menu options with decorative bullets
+  center_text(16, "Enter 's' to start the game");
   
   // Footer
-  char footer[] = "[[90x24]]";
-  center_text(22, footer);
+  char footer[] = "✨ Made by Group 21 of ECSE 444 - Fall 2025 ✨";
+  center_text(23, footer);
   
   print_screen();
 }
@@ -657,17 +705,13 @@ void menu_screen(void) {
 void play_tone_screen(void) {
   clear_screen();
   
-  print_horizontal_line(0, '=');
   center_text(2, "PLAYING TARGET TONE");
-  print_horizontal_line(4, '-');
   
   char freq_msg[50];
   sprintf(freq_msg, "Target Frequency: %.2f Hz", real_freq);
   center_text(8, freq_msg);
   
   center_text(10, "Listen carefully...");
-  
-  print_horizontal_line(23, '=');
   
   print_screen();
 }
@@ -676,96 +720,61 @@ void play_tone_screen(void) {
 void wait_for_record_screen(void) {
   clear_screen();
   
-  print_horizontal_line(0, '=');
   center_text(2, "WAITING FOR RECORDING");
-  print_horizontal_line(4, '-');
   
   center_text(8, "Tone playback complete!");
   center_text(10, "Try to match the pitch");
   center_text(12, "Type 'record' or 'r' to start");
   
-  print_horizontal_line(23, '=');
-  
   print_screen();
 }
 
 // RECORD_SOUND state screen
-void record_sound_screen(void) {
-  clear_screen();
+void record_sound_screen(bool first_draw) {
+  if (first_draw) {
+    // Draw the screen only once
+    clear_screen();
+    
+    center_text(2, "RECORDING IN PROGRESS");
+    
+    center_text(8, "Status: Recording...");
+    center_text(10, "Sing into the microphone!");
+    
+    print_screen();
+  }
   
-  print_horizontal_line(0, '=');
-  center_text(2, "RECORDING IN PROGRESS");
-  print_horizontal_line(4, '-');
-  
-  center_text(8, "Status: Recording...");
-  center_text(10, "Sing into the microphone!");
-  
-  // Show recording indicator
-  const char* spinner[] = {"|", "/", "-", "\\"};
+  // Update only line 23 (last line) with recording indicator using \r
   static int frame = 0;
-  char indicator[20];
-  sprintf(indicator, "Recording %s", spinner[frame % 4]);
-  center_text(12, indicator);
+  char indicator[SCREEN_WIDTH + 1];
+  sprintf(indicator, "Recording %s", spinner[frame % SPINNER_FRAMES]);
+  center_text(23, indicator);
   frame++;
   
-  print_horizontal_line(23, '=');
-  
-  print_screen();
+  // Print only line 23 with carriage return (no newline)
+  char line[SCREEN_WIDTH + 1];
+  memcpy(line, screen_buffer[23], SCREEN_WIDTH);
+  line[SCREEN_WIDTH] = '\r';
+  HAL_UART_Transmit(&huart1, (uint8_t*)line, SCREEN_WIDTH + 1, 1000);
 }
 
 // ANALYZE_RECORDING state screen
 void analyze_recording_screen(void) {
-  clear_screen();
+  // Update only line 23 (last line) with analysis message using \r
+  center_text(23, "Analyzing your beautiful vocal...");
   
-  print_horizontal_line(0, '=');
-  center_text(2, "ANALYZING RECORDING");
-  print_horizontal_line(4, '-');
-  
-  center_text(8, "Status: Processing with FFT...");
-  
-  // Show analysis indicator
-  const char* spinner[] = {"|", "/", "-", "\\"};
-  static int frame = 0;
-  char indicator[30];
-  sprintf(indicator, "Analyzing %s", spinner[frame % 4]);
-  center_text(10, indicator);
-  frame++;
-  
-  print_horizontal_line(23, '=');
-  
-  print_screen();
+  // Print only line 23 with carriage return (no newline)
+  char line[SCREEN_WIDTH + 1];
+  memcpy(line, screen_buffer[23], SCREEN_WIDTH);
+  line[SCREEN_WIDTH] = '\r';
+  HAL_UART_Transmit(&huart1, (uint8_t*)line, SCREEN_WIDTH + 1, 1000);
 }
 
-// PLAYBACK_SOUND state screen
-void playback_sound_screen(void) {
-  clear_screen();
-  
-  print_horizontal_line(0, '=');
-  center_text(2, "PLAYBACK RECORDING");
-  print_horizontal_line(4, '-');
-  
-  center_text(8, "Status: Playing back your recording...");
-  
-  // Show playback indicator
-  const char* spinner[] = {"|", "/", "-", "\\"};
-  static int frame = 0;
-  char indicator[25];
-  sprintf(indicator, "Playing %s", spinner[frame % 4]);
-  center_text(10, indicator);
-  frame++;
-  
-  print_horizontal_line(23, '=');
-  
-  print_screen();
-}
 
 // SHOW_RESULT state screen
 void show_result_screen(void) {
   clear_screen();
   
-  print_horizontal_line(0, '=');
   center_text(2, "GAME RESULT");
-  print_horizontal_line(4, '-');
   
   if (recorded_freq > 0.0f) {
     float32_t diff = fabsf(recorded_freq - real_freq);
@@ -802,8 +811,6 @@ void show_result_screen(void) {
   }
   
   center_text(20, "Type 'start' or 's' to play again");
-  
-  print_horizontal_line(23, '=');
   
   print_screen();
 }
@@ -878,6 +885,7 @@ void process_uart_command(char* cmd) {
   */
 int main(void)
 {
+
   /* USER CODE BEGIN 1 */
 
   /* USER CODE END 1 */
@@ -955,7 +963,7 @@ int main(void)
 				play_sound();
 				screen_drawn[PLAY_TONE] = true;
 			}
-			HAL_Delay(800);  // Play tone for 800ms
+			HAL_Delay(3000);  // Play tone for 3 seconds
 			HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_1);
 			// Reset flags and move to next state
 			screen_drawn[PLAY_TONE] = false;
@@ -977,7 +985,10 @@ int main(void)
 			// Update screen periodically to show animation
 			static uint32_t last_record_update = 0;
 			if (HAL_GetTick() - last_record_update > 200) {
-				record_sound_screen();
+				record_sound_screen(!screen_drawn[RECORD_SOUND]);
+				if (!screen_drawn[RECORD_SOUND]) {
+					screen_drawn[RECORD_SOUND] = true;
+				}
 				last_record_update = HAL_GetTick();
 			}
 			// Recording is in progress (handled by interrupt)
@@ -995,29 +1006,8 @@ int main(void)
 			recorded_freq = analyze_frequency(dfsdmBuffer, RECORD_LEN);
 			// Note: debug_harmonic_analysis() uses send_msg for debug output
 			
-			// Reset flags and move to next state
+			// Reset flags and move directly to SHOW_RESULT (skip playback)
 			screen_drawn[ANALYZE_RECORDING] = false;
-			screen_drawn[PLAYBACK_SOUND] = false;
-			gameState = PLAYBACK_SOUND;
-			break;
-			
-		case PLAYBACK_SOUND:
-			// Show playback screen with animation
-			static uint32_t last_playback_update = 0;
-			if (HAL_GetTick() - last_playback_update > 200) {
-				playback_sound_screen();
-				last_playback_update = HAL_GetTick();
-			}
-			// Play back the recorded sound
-			__HAL_TIM_DISABLE(&htim2);
-			__HAL_TIM_SET_AUTORELOAD(&htim2, 2750); //set back tim2 to 2750
-			__HAL_TIM_SET_COUNTER(&htim2, 0);
-			__HAL_TIM_ENABLE(&htim2);
-			HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1, (uint32_t *)dacBuffer, RECORD_LEN, DAC_ALIGN_12B_R);
-			HAL_Delay(2000);  // Play for 2 seconds
-			HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_1);
-			// Reset flags and move to next state
-			screen_drawn[PLAYBACK_SOUND] = false;
 			screen_drawn[SHOW_RESULT] = false;
 			gameState = SHOW_RESULT;
 			break;
@@ -1027,12 +1017,28 @@ int main(void)
 				show_result_screen();
 				screen_drawn[SHOW_RESULT] = true;
 			}
-			// Wait a bit before going back to menu
-			HAL_Delay(3000);
-			// Reset all flags and go back to MENU state
+			// Reset all flags before go back to MENU state
 			for(int i = 0; i < 7; i++) {
 				screen_drawn[i] = false;
 			}
+
+			// INSERT_YOUR_CODE
+			// Countdown from 10 to 0 with \r on result screen
+			for (int sec = 10; sec >= 0; sec--) {
+				char countdown_line[SCREEN_WIDTH + 1];
+				// Format message: "Returning to menu in 10...", centered
+				char msg[32];
+				sprintf(msg, "Returning to menu in %2d...", sec);
+				memset(countdown_line, ' ', SCREEN_WIDTH);
+				int msg_len = strlen(msg);
+				int start_pos = (SCREEN_WIDTH - msg_len) / 2;
+				if (start_pos < 0) start_pos = 0;
+				memcpy(countdown_line + start_pos, msg, msg_len);
+				countdown_line[SCREEN_WIDTH] = '\r'; // carriage return
+				HAL_UART_Transmit(&huart1, (uint8_t*)countdown_line, SCREEN_WIDTH + 1, 1000);
+				HAL_Delay(1000); // Wait 1 second
+			}
+
 			gameState = MENU;
 			break;
 		}
@@ -1321,8 +1327,8 @@ static void MX_DMA_Init(void)
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-/* USER CODE BEGIN MX_GPIO_Init_1 */
-/* USER CODE END MX_GPIO_Init_1 */
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
+  /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
@@ -1350,8 +1356,8 @@ static void MX_GPIO_Init(void)
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
-/* USER CODE BEGIN MX_GPIO_Init_2 */
-/* USER CODE END MX_GPIO_Init_2 */
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+  /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
@@ -1365,7 +1371,7 @@ void HAL_DFSDM_FilterRegConvCpltCallback(DFSDM_Filter_HandleTypeDef *hdfsdm_filt
 	HAL_DFSDM_FilterRegularStop_DMA(&hdfsdm1_filter0);
 
 	HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
-	send_msg("Recording complete!\r\n");
+	// send_msg("Recording complete!\r\n");
 
 	for (int i = 0; i < RECORD_LEN; i++) {
 		raw = dfsdmBuffer[i] >> 8;  // 24-bit signed sample
@@ -1407,8 +1413,7 @@ void Error_Handler(void)
   }
   /* USER CODE END Error_Handler_Debug */
 }
-
-#ifdef  USE_FULL_ASSERT
+#ifdef USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
   *         where the assert_param error has occurred.
