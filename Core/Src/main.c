@@ -40,11 +40,12 @@
 /* USER CODE BEGIN PD */
 #define DAC_MAX_BUFFER_SIZE 30
 #define FFT_LENGTH  1024    // Power of 2 for FFT
-#define SAMPLE_RATE 16000   // Hz (reduced from 44100 to save RAM)
+#define SAMPLE_RATE 44100   // Hz (reduced from 44100 to save RAM)
 #define PI 3.14159265358979f
-#define RECORD_LEN	48000	// samples for 3 seconds at 16kHz (3 * 16000 = 48000)
+#define RECORD_LEN	102424	// samples for 2 seconds
 #define SCREEN_WIDTH 90
 #define SCREEN_HEIGHT 24
+#define RESULT_WAIT 5 // seconds to show result screen
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -1078,7 +1079,7 @@ int main(void)
 
 			// INSERT_YOUR_CODE
 			// Countdown from 10 to 0 with \r on result screen
-			for (int sec = 10; sec >= 0; sec--) {
+			for (int sec = RESULT_WAIT; sec >= 0; sec--) {
 				char countdown_line[SCREEN_WIDTH + 1];
 				// Format message: "Returning to menu in 10...", centered
 				char msg[32];
@@ -1226,7 +1227,7 @@ static void MX_DFSDM1_Init(void)
   hdfsdm1_filter0.Init.RegularParam.Trigger = DFSDM_FILTER_SW_TRIGGER;
   hdfsdm1_filter0.Init.RegularParam.FastMode = ENABLE;
   hdfsdm1_filter0.Init.RegularParam.DmaMode = ENABLE;
-  hdfsdm1_filter0.Init.FilterParam.SincOrder = DFSDM_FILTER_FASTSINC_ORDER;
+  hdfsdm1_filter0.Init.FilterParam.SincOrder = DFSDM_FILTER_SINC1_ORDER;
   hdfsdm1_filter0.Init.FilterParam.Oversampling = 55;
   hdfsdm1_filter0.Init.FilterParam.IntOversampling = 1;
   if (HAL_DFSDM_FilterInit(&hdfsdm1_filter0) != HAL_OK)
