@@ -1,0 +1,7 @@
+HOW TO PLAY:
+
+[1] Type "start" or "s" to begin
+[2] Listen to the tone
+[3] Type "record" or "r" when prompted
+[4] Sing/hum to match the pitch
+[5] Get your accuracy score!

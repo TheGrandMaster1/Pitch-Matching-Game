@@ -3,7 +3,7 @@
 ---
 
 ## Game states
-- IDLE
+- MENU
 - PLAY_TONE
 - WAIT_FOR_RECORD
 - RECORD_SOUND

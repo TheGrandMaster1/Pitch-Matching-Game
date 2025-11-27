@@ -1,6 +1,6 @@
 ################################################################################
 # Automatically-generated file. Do not edit!
-# Toolchain: GNU Tools for STM32 (11.3.rel1)
+# Toolchain: GNU Tools for STM32 (13.3.rel1)
 ################################################################################
 
 -include ../makefile.init
@@ -60,8 +60,8 @@ all: main-build
 main-build: PitchMatchingGame.elf secondary-outputs
 
 # Tool invocations
-PitchMatchingGame.elf PitchMatchingGame.map: $(OBJS) $(USER_OBJS) C:\Users\lenab\STM32CubeIDE\workspace_1.13.1\PitchMatchingGame\STM32L4S5VITX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "PitchMatchingGame.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"C:\Users\lenab\STM32CubeIDE\workspace_1.13.1\PitchMatchingGame\STM32L4S5VITX_FLASH.ld" --specs=nosys.specs -Wl,-Map="PitchMatchingGame.map" -Wl,--gc-sections -static -L../Core/Lib -u _printf_float --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+PitchMatchingGame.elf PitchMatchingGame.map: $(OBJS) $(USER_OBJS) /home/antoine/STM32CubeIDE/ws-fall-2025/PitchMatchingGame/STM32L4S5VITX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "PitchMatchingGame.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"/home/antoine/STM32CubeIDE/ws-fall-2025/PitchMatchingGame/STM32L4S5VITX_FLASH.ld" --specs=nosys.specs -Wl,-Map="PitchMatchingGame.map" -Wl,--gc-sections -static -L../Core/Lib -u _printf_float --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 
