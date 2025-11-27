@@ -29,6 +29,7 @@
 #include <time.h>
 #include <stdio.h>
 #include <math.h>
+#include "uart_funtions.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -447,28 +448,29 @@ void debug_harmonic_analysis(void) {
 
 // Wrapper for UART send messages
 void send_msg(char* msg){
-	HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 1000);
+	// HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 1000);
+	sendBuffer(huart1.Instance, (uint8_t*)msg, strlen(msg));
 }
 
 // ADD UART RECEIVE CALLBACK:
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-    if (huart->Instance == USART1)
-    {
-        uint8_t c = uart_rx_buffer[0];
-
-        if (c == '\r' || c == '\n') {
-            uart_line[uart_pos] = '\0';    // terminate string
-            uart_cmd_ready = true;
-            uart_pos = 0;                  // reset for next command
-        }
-        else if (uart_pos < sizeof(uart_line) - 1) {
-            uart_line[uart_pos++] = c;     // store character
-        }
-
-        HAL_UART_Receive_IT(&huart1, uart_rx_buffer, 1);  // restart interrupt
-    }
-}
+//void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+//{
+//    if (huart->Instance == USART1)
+//    {
+//        uint8_t c = uart_rx_buffer[0];
+//
+//        if (c == '\r' || c == '\n') {
+//            uart_line[uart_pos] = '\0';    // terminate string
+//            uart_cmd_ready = true;
+//            uart_pos = 0;                  // reset for next command
+//        }
+//        else if (uart_pos < sizeof(uart_line) - 1) {
+//            uart_line[uart_pos++] = c;     // store character
+//        }
+//
+//        HAL_UART_Receive_IT(&huart1, uart_rx_buffer, 1);  // restart interrupt
+//    }
+//}
 
 // FUNCTION TO PROCESS UART COMMANDS:
 void process_uart_command(char* cmd) {
@@ -517,6 +519,7 @@ void process_uart_command(char* cmd) {
   */
 int main(void)
 {
+
   /* USER CODE BEGIN 1 */
 
   /* USER CODE END 1 */
@@ -943,8 +946,8 @@ static void MX_DMA_Init(void)
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-/* USER CODE BEGIN MX_GPIO_Init_1 */
-/* USER CODE END MX_GPIO_Init_1 */
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
+  /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
@@ -972,8 +975,8 @@ static void MX_GPIO_Init(void)
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
-/* USER CODE BEGIN MX_GPIO_Init_2 */
-/* USER CODE END MX_GPIO_Init_2 */
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+  /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
@@ -1029,8 +1032,7 @@ void Error_Handler(void)
   }
   /* USER CODE END Error_Handler_Debug */
 }
-
-#ifdef  USE_FULL_ASSERT
+#ifdef USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
   *         where the assert_param error has occurred.
