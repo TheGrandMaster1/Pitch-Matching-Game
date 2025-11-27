@@ -43,6 +43,8 @@
 #define SAMPLE_RATE 44100   // Hz
 #define PI 3.14159265358979f
 #define RECORD_LEN	65000	// samples for 65k/44.1khz = 1.47s
+#define SCREEN_WIDTH 90
+#define SCREEN_HEIGHT 24
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -65,7 +67,7 @@ UART_HandleTypeDef huart1;
 /* USER CODE BEGIN PV */
 // State machine for the game
 enum GameState {
-	IDLE,
+	MENU,
 	PLAY_TONE,
 	WAIT_FOR_RECORD,
 	RECORD_SOUND,
@@ -74,7 +76,8 @@ enum GameState {
 	SHOW_RESULT
 };
 
-enum GameState gameState = PLAY_TONE;
+enum GameState gameState = MENU;
+bool screen_drawn[7] = {false, false, false, false, false, false, false}; // Track if screen was drawn for each state
 
 float32_t sine_value;
 float32_t angle;
@@ -116,6 +119,22 @@ static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 // ADD FFT FUNCTION PROTOTYPE
 float32_t analyze_frequency(int32_t* audio_data, uint32_t data_length);
+
+// Screen function prototypes
+void clear_screen(void);
+void print_to_line(uint8_t row, uint8_t col, const char* text);
+void print_screen(void);
+void center_text(uint8_t row, const char* text);
+void print_horizontal_line(uint8_t row, char fill);
+void init_console(void);
+void test_screen(void);
+void menu_screen(void);
+void play_tone_screen(void);
+void wait_for_record_screen(void);
+void record_sound_screen(void);
+void analyze_recording_screen(void);
+void playback_sound_screen(void);
+void show_result_screen(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -158,6 +177,7 @@ void set_random_frequency(void)
 
     real_freq = (float32_t)timer_clock / ((new_period + 1) * DAC_MAX_BUFFER_SIZE);
 }
+
 //FFT:
 float32_t analyze_frequency(int32_t* audio_data, uint32_t data_length) {
     // 1. Prepare data for FFT
@@ -443,11 +463,349 @@ void debug_harmonic_analysis(void) {
     send_msg("==============================\r\n\n");
 }
 
-
-
 // Wrapper for UART send messages
 void send_msg(char* msg){
 	HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 1000);
+}
+
+// Initialize console - print 24 lines and show loading animation
+void init_console(void) {
+  // Print 24 empty lines to set resolution
+  char newlines[SCREEN_HEIGHT + 1];
+  for(int i = 0; i < SCREEN_HEIGHT; i++) {
+    newlines[i] = '\n';
+  }
+  newlines[SCREEN_HEIGHT] = '\0';
+  HAL_UART_Transmit(&huart1, (uint8_t*)newlines, SCREEN_HEIGHT, 1000);
+  
+  // Show initialization screen with loading animation
+  clear_screen();
+  
+  print_horizontal_line(0, '=');
+  center_text(2, "PITCH MATCHING GAME");
+  center_text(3, "Initializing System...");
+  print_horizontal_line(4, '-');
+  
+  center_text(6, "Console Resolution: 90x24");
+  center_text(8, "System Ready");
+  
+  // Show loading animation on line 23 for 5 seconds
+  const char* spinner[] = {"|", "/", "-", "\\"};
+  uint32_t start_time = HAL_GetTick();
+  uint32_t elapsed = 0;
+  int frame = 0;
+  
+  while (elapsed < 5000) {
+    clear_screen();
+    print_horizontal_line(0, '=');
+    center_text(2, "PITCH MATCHING GAME");
+    center_text(3, "Initializing System...");
+    print_horizontal_line(4, '-');
+    
+    center_text(6, "Console Resolution: 90x24");
+    
+    char loading[30];
+    sprintf(loading, "Loading %s", spinner[frame % 4]);
+    center_text(10, loading);
+    
+    print_horizontal_line(23, '=');
+    print_screen();
+    
+    frame++;
+    HAL_Delay(200); // Update every 200ms
+    elapsed = HAL_GetTick() - start_time;
+  }
+  
+  // Final ready message
+  clear_screen();
+  print_horizontal_line(0, '=');
+  center_text(2, "PITCH MATCHING GAME");
+  center_text(3, "System Ready!");
+  print_horizontal_line(4, '-');
+  center_text(8, "Initialization Complete");
+  print_horizontal_line(23, '=');
+  print_screen();
+  
+  HAL_Delay(1000);
+}
+
+
+
+// Test screen
+void test_screen(void) {
+  // This tests the screen resolution of 90x24
+  clear_screen();
+  
+  // Top border with line number
+  char top_line[SCREEN_WIDTH + 1];
+  sprintf(top_line, "1=========----------==========----------TESTSCREEN----------==========----------========90");
+  print_to_line(0, 0, top_line);
+  
+  // Numbered lines
+  for(int i = 2; i < 24; i++) {
+    char line[20];
+    sprintf(line, "%d", i);
+    print_to_line(i - 1, 0, line);
+  }
+  
+  // Bottom border
+  char bottom_line[SCREEN_WIDTH + 1];
+  sprintf(bottom_line, "24========----------==========----------[[90__24]]----------==========----------========90");
+  print_to_line(23, 0, bottom_line);
+  
+  print_screen();
+}
+
+
+// Screen buffer: [row][column] = [height][width]
+char screen_buffer[SCREEN_HEIGHT][SCREEN_WIDTH + 1]; // +1 for null terminator
+
+// Clear screen buffer with spaces
+void clear_screen(void) {
+  for(int row = 0; row < SCREEN_HEIGHT; row++) {
+    for(int col = 0; col < SCREEN_WIDTH; col++) {
+      screen_buffer[row][col] = ' ';
+    }
+    screen_buffer[row][SCREEN_WIDTH] = '\0'; // Null terminate
+  }
+}
+
+// Print a string to a specific line (row) at a specific column
+void print_to_line(uint8_t row, uint8_t col, const char* text) {
+  if (row >= SCREEN_HEIGHT) return;
+  
+  int len = strlen(text);
+  int max_len = SCREEN_WIDTH - col;
+  if (len > max_len) len = max_len;
+  
+  for(int i = 0; i < len; i++) {
+    if (col + i < SCREEN_WIDTH) {
+      screen_buffer[row][col + i] = text[i];
+    }
+  }
+}
+
+// Print entire screen buffer to UART (clears screen first with newlines)
+void print_screen(void) {
+  // Clear screen by sending 24 newlines
+  char newlines[SCREEN_HEIGHT + 1];
+  for(int i = 0; i < SCREEN_HEIGHT; i++) {
+    newlines[i] = '\n';
+  }
+  newlines[SCREEN_HEIGHT] = '\0';
+  HAL_UART_Transmit(&huart1, (uint8_t*)newlines, SCREEN_HEIGHT, 1000);
+  
+  // Print each line
+  for(int row = 0; row < SCREEN_HEIGHT; row++) {
+    char line[SCREEN_WIDTH + 2];
+    memcpy(line, screen_buffer[row], SCREEN_WIDTH);
+    line[SCREEN_WIDTH] = '\r';
+    if (row < SCREEN_HEIGHT - 1) {
+      // Add newline for all lines except the last one
+      line[SCREEN_WIDTH + 1] = '\n';
+      HAL_UART_Transmit(&huart1, (uint8_t*)line, SCREEN_WIDTH + 2, 1000);
+    } else {
+      // Last line: only carriage return, no newline
+      line[SCREEN_WIDTH + 1] = '\r';
+      HAL_UART_Transmit(&huart1, (uint8_t*)line, SCREEN_WIDTH + 1, 1000);
+    }
+  }
+}
+
+// Helper function to center text on a line
+void center_text(uint8_t row, const char* text) {
+  int len = strlen(text);
+  int start_col = (SCREEN_WIDTH - len) / 2;
+  if (start_col < 0) start_col = 0;
+  print_to_line(row, start_col, text);
+}
+
+// Helper function to create horizontal line
+void print_horizontal_line(uint8_t row, char fill) {
+  for(int col = 0; col < SCREEN_WIDTH; col++) {
+    screen_buffer[row][col] = fill;
+  }
+}
+
+// MENU state screen
+void menu_screen(void) {
+  clear_screen();
+  
+  // Top border
+  print_horizontal_line(0, '=');
+  
+  // Title
+  center_text(2, "PITCH MATCHING GAME");
+  center_text(3, "========== MENU ==========");
+  
+  // Menu options
+  print_to_line(6, 35, "1 - Start game");
+  print_to_line(8, 35, "2 - Help");
+  print_to_line(10, 35, "3 - Exit");
+  
+  // Bottom border
+  print_horizontal_line(23, '=');
+  
+  // Footer
+  char footer[] = "[[90x24]]";
+  center_text(22, footer);
+  
+  print_screen();
+}
+
+// PLAY_TONE state screen
+void play_tone_screen(void) {
+  clear_screen();
+  
+  print_horizontal_line(0, '=');
+  center_text(2, "PLAYING TARGET TONE");
+  print_horizontal_line(4, '-');
+  
+  char freq_msg[50];
+  sprintf(freq_msg, "Target Frequency: %.2f Hz", real_freq);
+  center_text(8, freq_msg);
+  
+  center_text(10, "Listen carefully...");
+  
+  print_horizontal_line(23, '=');
+  
+  print_screen();
+}
+
+// WAIT_FOR_RECORD state screen
+void wait_for_record_screen(void) {
+  clear_screen();
+  
+  print_horizontal_line(0, '=');
+  center_text(2, "WAITING FOR RECORDING");
+  print_horizontal_line(4, '-');
+  
+  center_text(8, "Tone playback complete!");
+  center_text(10, "Try to match the pitch");
+  center_text(12, "Type 'record' or 'r' to start");
+  
+  print_horizontal_line(23, '=');
+  
+  print_screen();
+}
+
+// RECORD_SOUND state screen
+void record_sound_screen(void) {
+  clear_screen();
+  
+  print_horizontal_line(0, '=');
+  center_text(2, "RECORDING IN PROGRESS");
+  print_horizontal_line(4, '-');
+  
+  center_text(8, "Status: Recording...");
+  center_text(10, "Sing into the microphone!");
+  
+  // Show recording indicator
+  const char* spinner[] = {"|", "/", "-", "\\"};
+  static int frame = 0;
+  char indicator[20];
+  sprintf(indicator, "Recording %s", spinner[frame % 4]);
+  center_text(12, indicator);
+  frame++;
+  
+  print_horizontal_line(23, '=');
+  
+  print_screen();
+}
+
+// ANALYZE_RECORDING state screen
+void analyze_recording_screen(void) {
+  clear_screen();
+  
+  print_horizontal_line(0, '=');
+  center_text(2, "ANALYZING RECORDING");
+  print_horizontal_line(4, '-');
+  
+  center_text(8, "Status: Processing with FFT...");
+  
+  // Show analysis indicator
+  const char* spinner[] = {"|", "/", "-", "\\"};
+  static int frame = 0;
+  char indicator[30];
+  sprintf(indicator, "Analyzing %s", spinner[frame % 4]);
+  center_text(10, indicator);
+  frame++;
+  
+  print_horizontal_line(23, '=');
+  
+  print_screen();
+}
+
+// PLAYBACK_SOUND state screen
+void playback_sound_screen(void) {
+  clear_screen();
+  
+  print_horizontal_line(0, '=');
+  center_text(2, "PLAYBACK RECORDING");
+  print_horizontal_line(4, '-');
+  
+  center_text(8, "Status: Playing back your recording...");
+  
+  // Show playback indicator
+  const char* spinner[] = {"|", "/", "-", "\\"};
+  static int frame = 0;
+  char indicator[25];
+  sprintf(indicator, "Playing %s", spinner[frame % 4]);
+  center_text(10, indicator);
+  frame++;
+  
+  print_horizontal_line(23, '=');
+  
+  print_screen();
+}
+
+// SHOW_RESULT state screen
+void show_result_screen(void) {
+  clear_screen();
+  
+  print_horizontal_line(0, '=');
+  center_text(2, "GAME RESULT");
+  print_horizontal_line(4, '-');
+  
+  if (recorded_freq > 0.0f) {
+    float32_t diff = fabsf(recorded_freq - real_freq);
+    float32_t ratio = (recorded_freq < real_freq) ? recorded_freq/real_freq : real_freq/recorded_freq;
+    float32_t accuracy = ratio * 100.0f;
+    
+    char target_msg[50];
+    sprintf(target_msg, "Target: %.2f Hz", real_freq);
+    center_text(6, target_msg);
+    
+    char your_msg[50];
+    sprintf(your_msg, "Your pitch: %.2f Hz", recorded_freq);
+    center_text(8, your_msg);
+    
+    char diff_msg[50];
+    sprintf(diff_msg, "Difference: %.2f Hz", diff);
+    center_text(10, diff_msg);
+    
+    char acc_msg[50];
+    sprintf(acc_msg, "Accuracy: %.2f%%", accuracy);
+    center_text(12, acc_msg);
+    
+    // Result message
+    if (diff <= 10.0f) {
+      center_text(15, "Result: Excellent match!");
+    } else if (diff <= 50.0f) {
+      center_text(15, "Result: Good effort!");
+    } else {
+      center_text(15, "Result: Keep practicing!");
+    }
+  } else {
+    center_text(8, "Could not detect your pitch");
+    center_text(10, "Try again!");
+  }
+  
+  center_text(20, "Type 'start' or 's' to play again");
+  
+  print_horizontal_line(23, '=');
+  
+  print_screen();
 }
 
 // ADD UART RECEIVE CALLBACK:
@@ -479,9 +837,12 @@ void process_uart_command(char* cmd) {
         len--;
     }
 
-    if (strcmp(cmd, "start") == 0 || strcmp(cmd, "s") == 0) {
-        if (gameState == IDLE) {
-            send_msg("\nStarting game...\r\n");
+    if (strcmp(cmd, "start") == 0 || strcmp(cmd, "s") == 0 || strcmp(cmd, "1") == 0) {
+        if (gameState == MENU) {
+            // Reset screen flags
+            for(int i = 0; i < 7; i++) {
+                screen_drawn[i] = false;
+            }
             gameState = PLAY_TONE;
         }
     }
@@ -491,7 +852,7 @@ void process_uart_command(char* cmd) {
             HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
             if (HAL_DFSDM_FilterRegularStart_DMA(&hdfsdm1_filter0, dfsdmBuffer, RECORD_LEN) != HAL_OK) {
                 send_msg("Error starting recording!\r\n");
-                gameState = IDLE;
+                gameState = MENU;
             } else {
                 gameState = RECORD_SOUND;
             }
@@ -553,14 +914,14 @@ int main(void)
       Error_Handler();
   }
 
-
   //for the random frequency:
   srand(HAL_GetTick());
 
   // START UART RECEPTION - ADD THIS LINE:
   HAL_UART_Receive_IT(&huart1, uart_rx_buffer, 1); //This tells the UART peripheral: "When you receive 1 byte, trigger an interrupt"
 
-  send_msg("Pitch Matching Game Initialized!\r\n");
+  // Initialize console - print 24 lines and show loading animation
+  init_console();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -568,60 +929,85 @@ int main(void)
   while (1)
   {
 	if (uart_cmd_ready) {
+    /**
+     * possible commands includes:
+     * start/s - Start the game
+     * record/r - Start recording (when prompted)
+     * help/h - Show this help
+     */
 	  process_uart_command(uart_line);
 	  uart_cmd_ready = false;
 	}
 	switch(gameState) {
-		case IDLE: {
+		case MENU: {
+			if (!screen_drawn[MENU]) {
+				menu_screen();
+				screen_drawn[MENU] = true;
+			}
 			HAL_Delay(10);
-      // waiting for user input via UART
 			break;
     }
 		case PLAY_TONE: {
-			// Play the target frequency tone
-			set_random_frequency();
-			play_sound();
-			send_msg("Listen to the target tone: ");
-			char freq_msg[50];
-			sprintf(freq_msg, "%.2f Hz\r\n", real_freq);
-			send_msg(freq_msg);
+			if (!screen_drawn[PLAY_TONE]) {
+				// Play the target frequency tone
+				set_random_frequency();
+				play_tone_screen();
+				play_sound();
+				screen_drawn[PLAY_TONE] = true;
+			}
 			HAL_Delay(800);  // Play tone for 800ms
 			HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_1);
-			send_msg("Now try to match the pitch! Send 'record' or 'r' to start recording.\r\n");
+			// Reset flags and move to next state
+			screen_drawn[PLAY_TONE] = false;
+			screen_drawn[WAIT_FOR_RECORD] = false;
 			gameState = WAIT_FOR_RECORD;
 			break;
 		}
 			
 		case WAIT_FOR_RECORD: {
-			// waiting for user input via UART
+			if (!screen_drawn[WAIT_FOR_RECORD]) {
+				wait_for_record_screen();
+				screen_drawn[WAIT_FOR_RECORD] = true;
+			}
 			HAL_Delay(10);
 			break;
 		}
 			
 		case RECORD_SOUND:
+			// Update screen periodically to show animation
+			static uint32_t last_record_update = 0;
+			if (HAL_GetTick() - last_record_update > 200) {
+				record_sound_screen();
+				last_record_update = HAL_GetTick();
+			}
 			// Recording is in progress (handled by interrupt)
 			HAL_Delay(10);
 			break;
 			
 		case ANALYZE_RECORDING:
-			// Analyze the recorded audio frequency
-			send_msg("Analyzing recording with FFT...\r\n");
+			// Show analysis screen with animation
+			static uint32_t last_analyze_update = 0;
+			if (HAL_GetTick() - last_analyze_update > 200) {
+				analyze_recording_screen();
+				last_analyze_update = HAL_GetTick();
+			}
 			// Perform frequency analysis
 			recorded_freq = analyze_frequency(dfsdmBuffer, RECORD_LEN);
-			debug_harmonic_analysis();
-
-			if (recorded_freq > 0.0f) {
-				char result_msg[100];
-				sprintf(result_msg, "Detected frequency: %.2f Hz\r\n", recorded_freq);
-				send_msg(result_msg);
-			} else {
-				send_msg("No clear frequency detected. Try singing louder!\r\n");
-			}
+			// Note: debug_harmonic_analysis() uses send_msg for debug output
+			
+			// Reset flags and move to next state
+			screen_drawn[ANALYZE_RECORDING] = false;
+			screen_drawn[PLAYBACK_SOUND] = false;
 			gameState = PLAYBACK_SOUND;
-
 			break;
 			
 		case PLAYBACK_SOUND:
+			// Show playback screen with animation
+			static uint32_t last_playback_update = 0;
+			if (HAL_GetTick() - last_playback_update > 200) {
+				playback_sound_screen();
+				last_playback_update = HAL_GetTick();
+			}
 			// Play back the recorded sound
 			__HAL_TIM_DISABLE(&htim2);
 			__HAL_TIM_SET_AUTORELOAD(&htim2, 2750); //set back tim2 to 2750
@@ -630,41 +1016,33 @@ int main(void)
 			HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1, (uint32_t *)dacBuffer, RECORD_LEN, DAC_ALIGN_12B_R);
 			HAL_Delay(2000);  // Play for 2 seconds
 			HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_1);
+			// Reset flags and move to next state
+			screen_drawn[PLAYBACK_SOUND] = false;
+			screen_drawn[SHOW_RESULT] = false;
 			gameState = SHOW_RESULT;
 			break;
 			
 		case SHOW_RESULT: {
-			// Compare frequencies and show result
-			if (recorded_freq > 0.0f) {
-				float32_t diff = fabsf(recorded_freq - real_freq);
-				float32_t ratio = (recorded_freq < real_freq) ? recorded_freq/real_freq : real_freq/recorded_freq;
-				float32_t accuracy = ratio * 100.0f;
-
-				char result_msg[150];
-				sprintf(result_msg, "Target: %.2f Hz | Your pitch: %.2f Hz | Difference: %.2f Hz | Accuracy: %.2f%% \r\n",
-						real_freq, recorded_freq, diff, accuracy);
-				send_msg(result_msg);
-
-				if (diff <= 10.0f) {  // 10Hz tolerance
-					send_msg("Excellent match! 🎵\r\n");
-				} else if (diff <= 50.0f) {
-					send_msg("Good effort! 👍\r\n");
-				} else {
-					send_msg("Keep practicing! 🎤\r\n");
-				}
-			} else {
-				send_msg("Could not detect your pitch. Try again!\r\n");
+			if (!screen_drawn[SHOW_RESULT]) {
+				show_result_screen();
+				screen_drawn[SHOW_RESULT] = true;
 			}
-
-			send_msg("Type 'start' or 's' to play again.\r\n");
-      
-			// go back to IDLE state
-			gameState = IDLE;
+			// Wait a bit before going back to menu
+			HAL_Delay(3000);
+			// Reset all flags and go back to MENU state
+			for(int i = 0; i < 7; i++) {
+				screen_drawn[i] = false;
+			}
+			gameState = MENU;
 			break;
 		}
 			
 		default:
-			gameState = IDLE;
+			// Reset all flags
+			for(int i = 0; i < 7; i++) {
+				screen_drawn[i] = false;
+			}
+			gameState = MENU;
 			break;
 	}
 
