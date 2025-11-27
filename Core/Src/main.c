@@ -554,13 +554,6 @@ void init_console(void) {
     elapsed = HAL_GetTick() - start_time;
   }
   
-  // Final ready message
-  clear_screen();
-  center_text(2, "PITCH MATCHING GAME");
-  center_text(3, "System Ready!");
-  center_text(8, "Initialization Complete");
-  print_screen();
-  
   HAL_Delay(1000);
 }
 
@@ -615,11 +608,11 @@ void print_game_title(void) {
    print_to_line(6, 4, "/_/   /_/\\__/\\___/_/ /_/  /_/  /_/\\__,_/\\__/\\___/_/ /_/_/_/ /_/\\__, /");
    print_to_line(7, 4, "                                                              /____/");
    
-   print_to_line(8 , 54, "   _________    __  _________");
-   print_to_line(9 , 54, "  / ____/   |  /  |/  / ____/");
-   print_to_line(10, 54, " / / __/ /| | / /|_/ / __/");
-   print_to_line(11, 54, "/ /_/ / ___ |/ /  / / /___");
-   print_to_line(12, 54, "\\____/_/  |_/_/  /_/_____/");
+   print_to_line(8 , 14, "   _________    __  _________");
+   print_to_line(9 , 14, "  / ____/   |  /  |/  / ____/");
+   print_to_line(10, 14, " / / __/ /| | / /|_/ / __/");
+   print_to_line(11, 14, "/ /_/ / ___ |/ /  / / /___");
+   print_to_line(12, 14, "\\____/_/  |_/_/  /_/_____/");
 }
 
 
@@ -701,44 +694,87 @@ void menu_screen(void) {
   print_screen();
 }
 
-// PLAY_TONE state screen
+/**
+ * Print the play tone screen
+ * From line 2 to line 12
+ * From column 4 to column 40
+ , __  _                                                                /\/
+/|/  \| |             o                                       o
+ |___/| |  __,            _  _    __,    _  _  _           ,      __
+ |    |/  /  |  |   | |  / |/ |  /  |   / |/ |/ |  |   |  / \_|  /
+ |    |__/\_/|_/ \_/|/|_/  |  |_/\_/|/    |  |  |_/ \_/|_/ \/ |_/\___/
+                   /|              /|
+                   \|              \|
+ */
 void play_tone_screen(void) {
   clear_screen();
   
-  center_text(2, "PLAYING TARGET TONE");
+  print_to_line(2, 6, ", __  _                                                                /\\/");
+  print_to_line(3, 6, "/|/  \\| |             o                                       o");
+  print_to_line(4, 6, " |___/| |  __,            _  _    __,    _  _  _           ,      __");
+  print_to_line(5, 6, " |    |/  /  |  |   | |  / |/ |  /  |   / |/ |/ |  |   |  / \\_|  /");
+  print_to_line(6, 6, " |    |__/\\_/|_/ \\_/|/|_/  |  |_/\\_/|/    |  |  |_/ \\_/|_/ \\/ |_/\\___/");
+  print_to_line(7, 6, "                   /|              /|");
+  print_to_line(8, 6, "                   \\|              \\|");
   
-  char freq_msg[50];
-  sprintf(freq_msg, "Target Frequency: %.2f Hz", real_freq);
-  center_text(8, freq_msg);
+  
+  // char freq_msg[50];
+  // sprintf(freq_msg, "Target Frequency: %.2f Hz", real_freq);
+  // center_text(8, freq_msg);
   
   center_text(10, "Listen carefully...");
   
   print_screen();
 }
 
-// WAIT_FOR_RECORD state screen
+/**
+WAIT_FOR_RECORD state screen
+ _
+(_|   |                                              |
+  |   |  __          ,_     _|_         ,_    _  _   |
+  |   | /  \_|   |  /  |     |  |   |  /  |  / |/ |  |
+   \_/|/\__/  \_/|_/   |_/   |_/ \_/|_/   |_/  |  |_/o
+     /|
+     \|
+*/
 void wait_for_record_screen(void) {
   clear_screen();
   
-  center_text(2, "WAITING FOR RECORDING");
+  print_to_line(2, 8, " _");
+  print_to_line(3, 8, "(_|   |                                              |");
+  print_to_line(4, 8, "  |   |  __          ,_     _|_         ,_    _  _   |");
+  print_to_line(5, 8, "  |   | /  \\_|   |  /  |     |  |   |  /  |  / |/ |  |");
+  print_to_line(6, 8, "   \\_/|/\\__/  \\_/|_/   |_/   |_/ \\_/|_/   |_/  |  |_/o");
+  print_to_line(7, 8, "     /|");
+  print_to_line(8, 8, "     \\|");
   
-  center_text(8, "Tone playback complete!");
-  center_text(10, "Try to match the pitch");
-  center_text(12, "Type 'record' or 'r' to start");
+  center_text(16, "Try to match the pitch by singing into the microphone!");
+  center_text(18, "Enter 'r' to start recording");
   
   print_screen();
 }
 
-// RECORD_SOUND state screen
+/**
+ * RECORD_SOUND state screen
+ _ _ ___    ___    ___    ___    ___    ___    ___    ___    ___    ___  _ _
+( | )   |  /   |  /   |  /   |  /   |  /   |  /   |  /   |  /   |  /   |( | )
+|/|/ /| | / /| | / /| | / /| | / /| | / /| | / /| | / /| | / /| | / /| ||/|/
+  / ___ |/ ___ |/ ___ |/ ___ |/ ___ |/ ___ |/ ___ |/ ___ |/ ___ |/ ___ |
+ /_/  |_/_/  |_/_/  |_/_/  |_/_/  |_/_/  |_/_/  |_/_/  |_/_/  |_/_/  |_|
+*/
 void record_sound_screen(bool first_draw) {
   if (first_draw) {
     // Draw the screen only once
     clear_screen();
     
-    center_text(2, "RECORDING IN PROGRESS");
+    print_to_line(2, 8, " _ _ ___    ___    ___    ___    ___    ___    ___    ___    ___    ___  _ _");
+    print_to_line(3, 8, "( | )   |  /   |  /   |  /   |  /   |  /   |  /   |  /   |  /   |( | )");
+    print_to_line(4, 8, "|/|/ /| | / /| | / /| | / /| | / /| | / /| | / /| | / /| | / /| ||/|/");
+    print_to_line(5, 8, "  / ___ |/ ___ |/ ___ |/ ___ |/ ___ |/ ___ |/ ___ |/ ___ |/ ___ |");
+    print_to_line(6, 8, " /_/  |_/_/  |_/_/  |_/_/  |_/_/  |_/_/  |_/_/  |_/_/  |_/_/  |_|");
     
-    center_text(8, "Status: Recording...");
-    center_text(10, "Sing into the microphone!");
+    
+    center_text(16, "Made you said that hahahaha...");
     
     print_screen();
   }
@@ -754,6 +790,7 @@ void record_sound_screen(bool first_draw) {
   char line[SCREEN_WIDTH + 1];
   memcpy(line, screen_buffer[23], SCREEN_WIDTH);
   line[SCREEN_WIDTH] = '\r';
+  // send_msg(line);
   HAL_UART_Transmit(&huart1, (uint8_t*)line, SCREEN_WIDTH + 1, 1000);
 }
 
@@ -766,15 +803,34 @@ void analyze_recording_screen(void) {
   char line[SCREEN_WIDTH + 1];
   memcpy(line, screen_buffer[23], SCREEN_WIDTH);
   line[SCREEN_WIDTH] = '\r';
-  HAL_UART_Transmit(&huart1, (uint8_t*)line, SCREEN_WIDTH + 1, 1000);
+  send_msg(line);
+  // HAL_UART_Transmit(&huart1, (uint8_t*)line, SCREEN_WIDTH + 1, 1000);
 }
 
 
-// SHOW_RESULT state screen
+/*&
+ * SHOW_RESULT state screen
+
+  ____                                            _ _
+ / ___| __ _ _ __ ___   ___   _ __ ___  ___ _   _| | |_ ___
+| |  _ / _` | '_ ` _ \ / _ \ | '__/ _ \/ __| | | | | __/ __|
+| |_| | (_| | | | | | |  __/ | | |  __/\__ \ |_| | | |_\__ \
+ \____|\__,_|_| |_| |_|\___| |_|  \___||___/\__,_|_|\__|___/
+
+ _____ _____ _____ _____ _____ _____ _____ _____ _____ _____ _____ _____
+|_____|_____|_____|_____|_____|_____|_____|_____|_____|_____|_____|_____|
+*/
 void show_result_screen(void) {
   clear_screen();
   
-  center_text(2, "GAME RESULT");
+  print_to_line(2, 4, "  ____                                            _ _");
+  print_to_line(3, 4, " / ___| __ _ _ __ ___   ___   _ __ ___  ___ _   _| | |_ ___");
+  print_to_line(4, 4, "| |  _ / _` | '_ ` _ \\ / _ \\ | '__/ _ \\/ __| | | | | __/ __|");
+  print_to_line(5, 4, "| |_| | (_| | | | | | |  __/ | | |  __/\\__ \\ |_| | | |_\\__ \\");
+  print_to_line(6, 4, " \\____|\\__,_|_| |_| |_|\\___| |_|  \\___||___/\\__,_|_|\\__|___/");
+  
+  print_to_line(8, 4, " _____ _____ _____ _____ _____ _____ _____ _____ _____ _____ _____ _____");
+  print_to_line(9, 4, "|_____|_____|_____|_____|_____|_____|_____|_____|_____|_____|_____|_____|");
   
   if (recorded_freq > 0.0f) {
     float32_t diff = fabsf(recorded_freq - real_freq);
@@ -783,34 +839,32 @@ void show_result_screen(void) {
     
     char target_msg[50];
     sprintf(target_msg, "Target: %.2f Hz", real_freq);
-    center_text(6, target_msg);
+    center_text(14, target_msg);
     
     char your_msg[50];
     sprintf(your_msg, "Your pitch: %.2f Hz", recorded_freq);
-    center_text(8, your_msg);
+    center_text(15, your_msg);
     
     char diff_msg[50];
     sprintf(diff_msg, "Difference: %.2f Hz", diff);
-    center_text(10, diff_msg);
+    center_text(16, diff_msg);
     
     char acc_msg[50];
     sprintf(acc_msg, "Accuracy: %.2f%%", accuracy);
-    center_text(12, acc_msg);
+    center_text(17, acc_msg);
     
     // Result message
     if (diff <= 10.0f) {
-      center_text(15, "Result: Excellent match!");
+      center_text(20, "Excellent match!");
     } else if (diff <= 50.0f) {
-      center_text(15, "Result: Good effort!");
+      center_text(20, "Good effort!");
     } else {
-      center_text(15, "Result: Keep practicing!");
+      center_text(20, "Keep practicing!");
     }
   } else {
-    center_text(8, "Could not detect your pitch");
-    center_text(10, "Try again!");
+    center_text(20, "Womp womp :P Could not detect your pitch");
+    center_text(21, "Try again!");
   }
-  
-  center_text(20, "Type 'start' or 's' to play again");
   
   print_screen();
 }
